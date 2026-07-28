@@ -1,8 +1,9 @@
-const CACHE_NAME = "aot-trainer-v1";
+const CACHE_NAME = "aot-trainer-v2";
 
 const LOCAL_ASSETS = [
   "./",
   "./index.html",
+  "./app.js",
   "./manifest.json",
   "./icon-192.png",
   "./icon-512.png",
@@ -13,7 +14,6 @@ const LOCAL_ASSETS = [
 const CDN_ASSETS = [
   "https://cdnjs.cloudflare.com/ajax/libs/react/18.3.1/umd/react.production.min.js",
   "https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.3.1/umd/react-dom.production.min.js",
-  "https://unpkg.com/@babel/standalone/babel.min.js",
 ];
 
 self.addEventListener("install", (event) => {
