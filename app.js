@@ -6,22 +6,17 @@ const {
   useRef
 } = React;
 
-// ================= local-storage polyfill mimicking window.storage =================
-// Lets this app reuse the exact same storage-call pattern as the Claude-hosted version,
-// but everything here lives only in this browser / this device.
+// local-storage polyfill mimicking the Claude-hosted window.storage API,
+// so this file can stay near-identical to the Claude-artifact version.
 window.storage = {
   async get(key) {
-    try {
-      const raw = localStorage.getItem("aot_" + key);
-      if (raw === null) return null;
-      return {
-        key,
-        value: raw,
-        shared: false
-      };
-    } catch (e) {
-      return null;
-    }
+    const raw = localStorage.getItem("aot_" + key);
+    if (raw === null) return null;
+    return {
+      key,
+      value: raw,
+      shared: false
+    };
   },
   async set(key, value) {
     localStorage.setItem("aot_" + key, value);
@@ -48,7 +43,7 @@ window.storage = {
   }
 };
 
-// ================= AOT brand tokens (rood - wit - zwart) =================
+// ================= AOT brand tokens (echt rood/zwart uit logo) =================
 const COLORS = {
   bg: "#121110",
   surface: "#1B1917",
@@ -58,11 +53,12 @@ const COLORS = {
   text: "#F7F4EE",
   textMuted: "#A69E92",
   textFaint: "#6C645A",
-  accent: "#E1261C",
-  accentDark: "#961712",
-  accentSoft: "#E1261C22",
+  accent: "#CF5550",
+  // AOT rood — gemeten uit logo.eps (CMYK 14/77/63/3)
+  accentDark: "#803532",
+  accentSoft: "#CF555022",
   white: "#FFFFFF",
-  danger: "#E1261C"
+  danger: "#CF5550"
 };
 const displayFont = '"Arial Narrow", "Helvetica Neue Condensed", "Roboto Condensed", Arial, sans-serif';
 const bodyFont = '-apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif';
@@ -103,6 +99,7 @@ const MUSCLE_GROUPS = [{
   label: "Onderlichaam · Achterzijde",
   short: "OL-A"
 }];
+const groupLabel = id => MUSCLE_GROUPS.find(g => g.id === id)?.label || id;
 const groupShort = id => MUSCLE_GROUPS.find(g => g.id === id)?.short || id;
 const BLOCK_TYPES = [{
   id: "single",
@@ -117,7 +114,9 @@ const BLOCK_TYPES = [{
   id: "circuit",
   label: "Circuit"
 }];
-const DEFAULT_LIBRARY = [{
+const DEFAULT_LIBRARY = [
+// Bovenlichaam - voorzijde
+{
   id: "ex_pushup",
   name: "Push-up",
   groups: ["upper_front"]
@@ -161,7 +160,9 @@ const DEFAULT_LIBRARY = [{
   id: "ex_dips",
   name: "Dips",
   groups: ["upper_front"]
-}, {
+},
+// Bovenlichaam - achterzijde
+{
   id: "ex_pullup",
   name: "Pull-up",
   groups: ["upper_back"]
@@ -209,7 +210,9 @@ const DEFAULT_LIBRARY = [{
   id: "ex_farmers_carry",
   name: "Farmer's carry",
   groups: ["upper_back", "lower_back"]
-}, {
+},
+// Onderlichaam - voorzijde
+{
   id: "ex_squat",
   name: "Squat",
   groups: ["lower_front"]
@@ -257,7 +260,9 @@ const DEFAULT_LIBRARY = [{
   id: "ex_burpee",
   name: "Burpee",
   groups: ["lower_front", "upper_front"]
-}, {
+},
+// Onderlichaam - achterzijde
+{
   id: "ex_rdl",
   name: "Romanian deadlift",
   groups: ["lower_back"]
@@ -301,35 +306,68 @@ const DEFAULT_LIBRARY = [{
 
 // ================= storage helpers =================
 async function loadClientsList() {
-  const res = await window.storage.get("clients-list");
-  return res ? JSON.parse(res.value) : [];
+  try {
+    const res = await window.storage.get("clients-list", false);
+    return res ? JSON.parse(res.value) : [];
+  } catch {
+    return [];
+  }
 }
 async function saveClientsList(list) {
-  await window.storage.set("clients-list", JSON.stringify(list));
+  try {
+    await window.storage.set("clients-list", JSON.stringify(list), false);
+  } catch (e) {
+    console.error("Kon klantenlijst niet opslaan", e);
+  }
 }
 async function loadClientData(id) {
-  const res = await window.storage.get(`client-data:${id}`);
-  return res ? JSON.parse(res.value) : {
-    sessions: [],
-    measurements: []
-  };
+  try {
+    const res = await window.storage.get(`client-data:${id}`, false);
+    return res ? JSON.parse(res.value) : {
+      sessions: [],
+      measurements: []
+    };
+  } catch {
+    return {
+      sessions: [],
+      measurements: []
+    };
+  }
 }
 async function saveClientData(id, data) {
-  await window.storage.set(`client-data:${id}`, JSON.stringify(data));
+  try {
+    await window.storage.set(`client-data:${id}`, JSON.stringify(data), false);
+  } catch (e) {
+    console.error("Kon klantdata niet opslaan", e);
+  }
 }
 async function loadLibraryState() {
-  const res = await window.storage.get("exercise-library");
-  return res ? JSON.parse(res.value) : {
-    hiddenIds: [],
-    customExercises: [],
-    order: {}
-  };
+  try {
+    const res = await window.storage.get("exercise-library", false);
+    return res ? JSON.parse(res.value) : {
+      hiddenIds: [],
+      customExercises: [],
+      order: {}
+    };
+  } catch {
+    return {
+      hiddenIds: [],
+      customExercises: [],
+      order: {}
+    };
+  }
 }
 async function saveLibraryState(state) {
-  await window.storage.set("exercise-library", JSON.stringify(state));
+  try {
+    await window.storage.set("exercise-library", JSON.stringify(state), false);
+  } catch (e) {
+    console.error("Kon bibliotheek niet opslaan", e);
+  }
 }
 function copyToClipboard(text) {
-  if (navigator.clipboard && navigator.clipboard.writeText) return navigator.clipboard.writeText(text);
+  if (navigator.clipboard && navigator.clipboard.writeText) {
+    return navigator.clipboard.writeText(text);
+  }
   return new Promise((resolve, reject) => {
     try {
       const ta = document.createElement("textarea");
@@ -688,8 +726,8 @@ function LibraryModal({
   const [newGroups, setNewGroups] = useState([]);
   const byGroup = groupId => library.filter(ex => ex.groups.includes(groupId)).slice().sort((a, b) => {
     const order = libState.order[groupId] || [];
-    const ia = order.indexOf(a.id),
-      ib = order.indexOf(b.id);
+    const ia = order.indexOf(a.id);
+    const ib = order.indexOf(b.id);
     if (ia === -1 && ib === -1) return 0;
     if (ia === -1) return 1;
     if (ib === -1) return -1;
@@ -697,8 +735,8 @@ function LibraryModal({
   });
   const move = (groupId, id, dir) => {
     const list = byGroup(groupId).map(e => e.id);
-    const i = list.indexOf(id),
-      j = i + dir;
+    const i = list.indexOf(id);
+    const j = i + dir;
     if (j < 0 || j >= list.length) return;
     [list[i], list[j]] = [list[j], list[i]];
     const nextState = {
@@ -772,7 +810,7 @@ function LibraryModal({
       marginBottom: 18
     }
   }, /*#__PURE__*/React.createElement(SectionTitle, {
-    sub: "Beheer je oefeningen per spiergroep — met pijltjes ordenen"
+    sub: "Beheer je oefeningen per spiergroep — sleep met pijltjes om te ordenen"
   }, "Oefeningenbibliotheek"), /*#__PURE__*/React.createElement(Btn, {
     variant: "ghost",
     onClick: onClose
@@ -917,58 +955,7 @@ function LibraryModal({
   }, "Kies één of meerdere spiergroepen die deze oefening aanspreekt."))));
 }
 
-// ================= data helpers =================
-function emptySet(mode) {
-  return mode === "time" ? {
-    id: uid(),
-    duration: "",
-    weight: ""
-  } : {
-    id: uid(),
-    reps: "",
-    weight: ""
-  };
-}
-function emptyExercise() {
-  return {
-    id: uid(),
-    name: "",
-    mode: "reps",
-    sets: [emptySet("reps")]
-  };
-}
-function emptyBlock(type = "single", exerciseCount = 1) {
-  return {
-    id: uid(),
-    type,
-    exercises: Array.from({
-      length: exerciseCount
-    }, () => emptyExercise())
-  };
-}
-function findLastUsage(sessions, name) {
-  const target = name.trim().toLowerCase();
-  if (!target) return null;
-  const sorted = [...sessions].sort((a, b) => a.date < b.date ? 1 : -1);
-  for (const s of sorted) {
-    for (const block of s.blocks || []) {
-      for (const ex of block.exercises) {
-        if (ex.name.trim().toLowerCase() === target && ex.sets.length > 0) {
-          return {
-            mode: ex.mode,
-            lastSet: ex.sets[ex.sets.length - 1]
-          };
-        }
-      }
-    }
-  }
-  return null;
-}
-function blockBadgeLabel(type) {
-  return BLOCK_TYPES.find(b => b.id === type)?.label || "Los";
-}
-
-// ================= root app =================
+// ================= main app =================
 function TrainingTracker() {
   const [clients, setClients] = useState([]);
   const [selectedId, setSelectedId] = useState(null);
@@ -988,6 +975,8 @@ function TrainingTracker() {
   });
   const [libraryOpen, setLibraryOpen] = useState(false);
   const [importMsg, setImportMsg] = useState("");
+  const [importOpen, setImportOpen] = useState(false);
+  const [importText, setImportText] = useState("");
   const importInputRef = useRef(null);
   useEffect(() => {
     (async () => {
@@ -1036,7 +1025,9 @@ function TrainingTracker() {
     const list = clients.filter(c => c.id !== id);
     setClients(list);
     await saveClientsList(list);
-    await window.storage.delete(`client-data:${id}`);
+    try {
+      await window.storage.delete(`client-data:${id}`, false);
+    } catch {}
     setConfirmDelete(null);
     if (selectedId === id) {
       setSelectedId(list.length ? list[0].id : null);
@@ -1059,40 +1050,59 @@ function TrainingTracker() {
     };
     downloadFile(`aot-tool-backup-${todayISO()}.json`, JSON.stringify(payload, null, 2), "application/json");
   };
+  const applyImportedPayload = async payload => {
+    if (!payload || !payload.clients) throw new Error("ongeldig bestand");
+    const ok = window.confirm("Dit overschrijft de data die nu hier zichtbaar is. Doorgaan?");
+    if (!ok) return;
+    await saveClientsList(payload.clients);
+    await saveLibraryState(payload.library || {
+      hiddenIds: [],
+      customExercises: [],
+      order: {}
+    });
+    for (const c of payload.clients) {
+      await saveClientData(c.id, payload.clientData && payload.clientData[c.id] || {
+        sessions: [],
+        measurements: []
+      });
+    }
+    setClients(payload.clients);
+    setLibState(payload.library || {
+      hiddenIds: [],
+      customExercises: [],
+      order: {}
+    });
+    setImportMsg("Geïmporteerd ✓");
+    if (payload.clients.length) setSelectedId(payload.clients[0].id);
+    setTimeout(() => setImportMsg(""), 3000);
+  };
   const handleImportFile = e => {
     const file = e.target.files[0];
     if (!file) return;
     const reader = new FileReader();
     reader.onload = async () => {
       try {
-        const payload = JSON.parse(reader.result);
-        if (!payload.clients) throw new Error("ongeldig bestand");
-        const ok = window.confirm("Dit overschrijft de data die nu op dit toestel staat. Doorgaan?");
-        if (!ok) return;
-        await saveClientsList(payload.clients);
-        await saveLibraryState(payload.library || {
-          hiddenIds: [],
-          customExercises: [],
-          order: {}
-        });
-        for (const c of payload.clients) {
-          await saveClientData(c.id, payload.clientData && payload.clientData[c.id] || {
-            sessions: [],
-            measurements: []
-          });
-        }
-        setImportMsg("Geïmporteerd — pagina herlaadt...");
-        setTimeout(() => window.location.reload(), 900);
+        await applyImportedPayload(JSON.parse(reader.result));
       } catch (err) {
         window.alert("Kon het bestand niet importeren. Is het een geldige back-up?");
       }
     };
     reader.readAsText(file);
   };
+  const handleImportPaste = async () => {
+    try {
+      await applyImportedPayload(JSON.parse(importText));
+      setImportText("");
+      setImportOpen(false);
+    } catch (err) {
+      window.alert("Kon de geplakte tekst niet importeren. Is het de volledige inhoud van een back-up-bestand?");
+    }
+  };
   return /*#__PURE__*/React.createElement("div", {
     style: {
       display: "flex",
-      height: "100vh",
+      height: "100%",
+      minHeight: 640,
       background: COLORS.bg,
       fontFamily: bodyFont
     }
@@ -1103,31 +1113,25 @@ function TrainingTracker() {
       borderRight: `1px solid ${COLORS.borderSoft}`,
       display: "flex",
       flexDirection: "column",
-      padding: "18px 14px",
-      overflowY: "auto"
+      padding: "18px 14px"
     }
   }, /*#__PURE__*/React.createElement("div", {
     style: {
-      fontFamily: displayFont,
-      fontWeight: 800,
-      fontSize: 16,
-      letterSpacing: "0.06em",
-      textTransform: "uppercase",
-      color: COLORS.text,
-      marginBottom: 4
+      background: COLORS.white,
+      borderRadius: 8,
+      padding: "10px 12px",
+      marginBottom: 10,
+      display: "inline-block"
     }
-  }, "Art ", /*#__PURE__*/React.createElement("span", {
+  }, /*#__PURE__*/React.createElement("img", {
+    src: "logo.png",
+    alt: "Art of Training",
     style: {
-      color: COLORS.accent
+      width: "100%",
+      maxWidth: 150,
+      display: "block"
     }
-  }, "of"), " Training"), /*#__PURE__*/React.createElement("div", {
-    style: {
-      width: 32,
-      height: 3,
-      background: COLORS.accent,
-      marginBottom: 10
-    }
-  }), /*#__PURE__*/React.createElement("div", {
+  })), /*#__PURE__*/React.createElement("div", {
     style: {
       fontSize: 11,
       color: COLORS.textFaint,
@@ -1136,6 +1140,7 @@ function TrainingTracker() {
   }, "Klanten & progressie"), /*#__PURE__*/React.createElement("div", {
     style: {
       flex: 1,
+      overflowY: "auto",
       display: "flex",
       flexDirection: "column",
       gap: 4
@@ -1209,7 +1214,7 @@ function TrainingTracker() {
       lineHeight: 1.5,
       marginBottom: 2
     }
-  }, "Data staat lokaal op dit toestel. Exporteer om over te zetten naar je ander toestel."), /*#__PURE__*/React.createElement(Btn, {
+  }, "Werk je op meerdere toestellen? Exporteer hier en importeer op je ander toestel."), /*#__PURE__*/React.createElement(Btn, {
     variant: "subtle",
     onClick: exportAll,
     style: {
@@ -1217,19 +1222,65 @@ function TrainingTracker() {
     }
   }, "Exporteer back-up"), /*#__PURE__*/React.createElement(Btn, {
     variant: "subtle",
-    onClick: () => importInputRef.current.click(),
+    onClick: () => setImportOpen(v => !v),
     style: {
       width: "100%"
     }
-  }, "Importeer back-up"), /*#__PURE__*/React.createElement("input", {
+  }, importOpen ? "Sluit importeren" : "Importeer back-up"), importOpen && /*#__PURE__*/React.createElement("div", {
+    style: {
+      background: COLORS.surfaceRaised,
+      border: `1px solid ${COLORS.border}`,
+      borderRadius: 6,
+      padding: 8
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 10,
+      color: COLORS.textFaint,
+      marginBottom: 6
+    }
+  }, "Kies het bestand:"), /*#__PURE__*/React.createElement("input", {
     ref: importInputRef,
     type: "file",
     accept: "application/json",
     onChange: handleImportFile,
     style: {
-      display: "none"
+      fontSize: 10,
+      color: COLORS.textMuted,
+      width: "100%",
+      marginBottom: 8
     }
-  }), importMsg && /*#__PURE__*/React.createElement("div", {
+  }), /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 10,
+      color: COLORS.textFaint,
+      margin: "6px 0"
+    }
+  }, "Werkt de bestandskiezer niet? Open het back-up-bestand in een teksteditor, kopieer alles, en plak hier:"), /*#__PURE__*/React.createElement("textarea", {
+    value: importText,
+    onChange: e => setImportText(e.target.value),
+    placeholder: "Plak hier de volledige inhoud van je back-up-bestand...",
+    style: {
+      width: "100%",
+      minHeight: 70,
+      fontFamily: monoFont,
+      fontSize: 10,
+      background: COLORS.bg,
+      color: COLORS.text,
+      border: `1px solid ${COLORS.border}`,
+      borderRadius: 5,
+      padding: 6,
+      boxSizing: "border-box",
+      resize: "vertical"
+    }
+  }), /*#__PURE__*/React.createElement(Btn, {
+    onClick: handleImportPaste,
+    disabled: !importText.trim(),
+    style: {
+      width: "100%",
+      marginTop: 6
+    }
+  }, "Importeer geplakte tekst")), importMsg && /*#__PURE__*/React.createElement("div", {
     style: {
       fontSize: 11,
       color: COLORS.accent
@@ -1290,8 +1341,7 @@ function TrainingTracker() {
       display: "flex",
       gap: 4,
       borderBottom: `1px solid ${COLORS.borderSoft}`,
-      marginBottom: 24,
-      flexWrap: "wrap"
+      marginBottom: 24
     }
   }, [["training", "Training plannen"], ["progressie", "Progressie"], ["metingen", "Lichaamsmetingen"]].map(([key, label]) => /*#__PURE__*/React.createElement("div", {
     key: key,
@@ -1326,6 +1376,59 @@ function TrainingTracker() {
     setLibState: setLibState,
     onClose: () => setLibraryOpen(false)
   }));
+}
+
+// ================= helpers for session/blocks =================
+function emptySet(mode) {
+  return mode === "time" ? {
+    id: uid(),
+    duration: "",
+    weight: ""
+  } : {
+    id: uid(),
+    reps: "",
+    weight: ""
+  };
+}
+function emptyExercise() {
+  return {
+    id: uid(),
+    name: "",
+    mode: "reps",
+    sets: [emptySet("reps")]
+  };
+}
+function emptyBlock(type = "single", exerciseCount = 1) {
+  return {
+    id: uid(),
+    type,
+    exercises: Array.from({
+      length: exerciseCount
+    }, () => emptyExercise())
+  };
+}
+
+// find most recent logged instance of an exercise name for this client
+function findLastUsage(sessions, name) {
+  const target = name.trim().toLowerCase();
+  if (!target) return null;
+  const sorted = [...sessions].sort((a, b) => a.date < b.date ? 1 : -1);
+  for (const s of sorted) {
+    for (const block of s.blocks || []) {
+      for (const ex of block.exercises) {
+        if (ex.name.trim().toLowerCase() === target && ex.sets.length > 0) {
+          return {
+            mode: ex.mode,
+            lastSet: ex.sets[ex.sets.length - 1]
+          };
+        }
+      }
+    }
+  }
+  return null;
+}
+function blockBadgeLabel(type) {
+  return BLOCK_TYPES.find(b => b.id === type)?.label || "Los";
 }
 
 // ================= Training tab =================
@@ -1404,16 +1507,18 @@ function TrainingTab({
       } : b)
     }));
   };
-  const updateExerciseName = (blockId, exId, name) => setForm(f => ({
-    ...f,
-    blocks: f.blocks.map(b => b.id === blockId ? {
-      ...b,
-      exercises: b.exercises.map(ex => ex.id === exId ? {
-        ...ex,
-        name
-      } : ex)
-    } : b)
-  }));
+  const updateExerciseName = (blockId, exId, name) => {
+    setForm(f => ({
+      ...f,
+      blocks: f.blocks.map(b => b.id === blockId ? {
+        ...b,
+        exercises: b.exercises.map(ex => ex.id === exId ? {
+          ...ex,
+          name
+        } : ex)
+      } : b)
+    }));
+  };
   const setExerciseMode = (blockId, exId, mode) => setForm(f => ({
     ...f,
     blocks: f.blocks.map(b => b.id === blockId ? {
@@ -1495,12 +1600,16 @@ function TrainingTab({
   });
   const sessionToText = s => {
     const lines = [`TRAINING · ${clientName} · ${fmtDate(s.date)}`, ""];
-    s.blocks.forEach(b => {
-      if (b.type !== "single") lines.push(blockBadgeLabel(b.type).toUpperCase());
+    s.blocks.forEach((b, i) => {
+      if (b.type !== "single") lines.push(`${blockBadgeLabel(b.type).toUpperCase()}`);
       b.exercises.forEach(ex => {
-        lines.push(ex.name);
+        lines.push(`${ex.name}`);
         ex.sets.forEach((set, si) => {
-          lines.push(ex.mode === "time" ? `  set ${si + 1}: ${fmtDuration(set.duration)}${set.weight ? ` @ ${set.weight}kg` : ""}` : `  set ${si + 1}: ${set.reps} reps${set.weight ? ` @ ${set.weight}kg` : ""}`);
+          if (ex.mode === "time") {
+            lines.push(`  set ${si + 1}: ${fmtDuration(set.duration)}${set.weight ? ` @ ${set.weight}kg` : ""}`);
+          } else {
+            lines.push(`  set ${si + 1}: ${set.reps} reps${set.weight ? ` @ ${set.weight}kg` : ""}`);
+          }
         });
       });
       lines.push("");
@@ -1517,9 +1626,9 @@ function TrainingTab({
   };
   const handleDownload = s => {
     const rowsHtml = s.blocks.map(b => {
-      const badge = b.type !== "single" ? `<div style="display:inline-block;background:#E1261C;color:#fff;font-size:11px;font-weight:700;letter-spacing:.05em;text-transform:uppercase;padding:3px 9px;border-radius:4px;margin-bottom:8px;">${blockBadgeLabel(b.type)}</div>` : "";
+      const badge = b.type !== "single" ? `<div style="display:inline-block;background:#CF5550;color:#fff;font-size:11px;font-weight:700;letter-spacing:.05em;text-transform:uppercase;padding:3px 9px;border-radius:4px;margin-bottom:8px;">${blockBadgeLabel(b.type)}</div>` : "";
       const exercisesHtml = b.exercises.map(ex => {
-        const setsHtml = ex.sets.map(set => ex.mode === "time" ? `<span style="display:inline-block;background:#1B1917;border:1px solid #37332E;border-radius:4px;padding:3px 8px;margin:2px;font-family:monospace;font-size:12px;color:#ddd;">${fmtDuration(set.duration)}${set.weight ? ` · ${set.weight}kg` : ""}</span>` : `<span style="display:inline-block;background:#1B1917;border:1px solid #37332E;border-radius:4px;padding:3px 8px;margin:2px;font-family:monospace;font-size:12px;color:#ddd;">${set.reps}×${set.weight || 0}kg</span>`).join("");
+        const setsHtml = ex.sets.map((set, si) => ex.mode === "time" ? `<span style="display:inline-block;background:#1B1917;border:1px solid #37332E;border-radius:4px;padding:3px 8px;margin:2px;font-family:monospace;font-size:12px;color:#ddd;">${fmtDuration(set.duration)}${set.weight ? ` · ${set.weight}kg` : ""}</span>` : `<span style="display:inline-block;background:#1B1917;border:1px solid #37332E;border-radius:4px;padding:3px 8px;margin:2px;font-family:monospace;font-size:12px;color:#ddd;">${set.reps}×${set.weight || 0}kg</span>`).join("");
         return `<div style="margin-bottom:10px;"><div style="font-weight:700;color:#fff;margin-bottom:4px;">${ex.name}</div><div>${setsHtml}</div></div>`;
       }).join("");
       return `<div style="border:1px solid #37332E;border-radius:8px;padding:14px;margin-bottom:12px;">${badge}${exercisesHtml}</div>`;
@@ -1527,8 +1636,8 @@ function TrainingTab({
     const html = `<!DOCTYPE html><html lang="nl"><head><meta charset="utf-8"><title>Training ${fmtDate(s.date)} — ${clientName}</title></head>
 <body style="margin:0;background:#121110;color:#F7F4EE;font-family:-apple-system,Segoe UI,sans-serif;padding:32px;">
 <div style="max-width:640px;margin:0 auto;">
-  <div style="font-weight:800;text-transform:uppercase;letter-spacing:.06em;font-size:20px;">Art <span style="color:#E1261C;">of</span> Training</div>
-  <div style="width:32px;height:3px;background:#E1261C;margin:8px 0 20px;"></div>
+  <div style="font-weight:800;text-transform:uppercase;letter-spacing:.06em;font-size:20px;">Art <span style="color:#CF5550;">of</span> Training</div>
+  <div style="width:32px;height:3px;background:#CF5550;margin:8px 0 20px;"></div>
   <div style="font-size:12px;color:#A69E92;text-transform:uppercase;letter-spacing:.05em;">Training voor</div>
   <div style="font-size:26px;font-weight:800;text-transform:uppercase;margin-bottom:2px;">${clientName}</div>
   <div style="font-size:13px;color:#A69E92;margin-bottom:20px;">${fmtDate(s.date)}</div>
@@ -1563,8 +1672,7 @@ function TrainingTab({
     style: {
       display: "flex",
       gap: 16,
-      marginBottom: 14,
-      flexWrap: "wrap"
+      marginBottom: 14
     }
   }, /*#__PURE__*/React.createElement("div", {
     style: {
@@ -1579,8 +1687,7 @@ function TrainingTab({
     }))
   })), /*#__PURE__*/React.createElement("div", {
     style: {
-      flex: 1,
-      minWidth: 200
+      flex: 1
     }
   }, /*#__PURE__*/React.createElement(Label, null, "Notities (optioneel)"), /*#__PURE__*/React.createElement(Input, {
     placeholder: "bv. focus op techniek, RPE hoog vandaag...",
@@ -1589,7 +1696,7 @@ function TrainingTab({
       ...f,
       notes: e.target.value
     }))
-  }))), form.blocks.map(block => /*#__PURE__*/React.createElement("div", {
+  }))), form.blocks.map((block, bIdx) => /*#__PURE__*/React.createElement("div", {
     key: block.id,
     style: {
       border: `1px solid ${block.type !== "single" ? COLORS.accent + "66" : COLORS.borderSoft}`,
@@ -1603,9 +1710,7 @@ function TrainingTab({
       display: "flex",
       justifyContent: "space-between",
       alignItems: "center",
-      marginBottom: 12,
-      flexWrap: "wrap",
-      gap: 8
+      marginBottom: 12
     }
   }, /*#__PURE__*/React.createElement(Segmented, {
     options: BLOCK_TYPES,
@@ -1618,7 +1723,7 @@ function TrainingTab({
       fontSize: 11.5,
       cursor: "pointer"
     }
-  }, "groep verwijderen")), block.exercises.map(ex => /*#__PURE__*/React.createElement("div", {
+  }, "groep verwijderen")), block.exercises.map((ex, exIdx) => /*#__PURE__*/React.createElement("div", {
     key: ex.id,
     style: {
       background: COLORS.surface,
@@ -1632,13 +1737,11 @@ function TrainingTab({
       display: "flex",
       gap: 8,
       marginBottom: 10,
-      alignItems: "center",
-      flexWrap: "wrap"
+      alignItems: "center"
     }
   }, /*#__PURE__*/React.createElement("div", {
     style: {
-      flex: 1,
-      minWidth: 180
+      flex: 1
     }
   }, /*#__PURE__*/React.createElement(ExerciseCombobox, {
     value: ex.name,
@@ -1672,8 +1775,7 @@ function TrainingTab({
     style: {
       display: "flex",
       gap: 8,
-      alignItems: "center",
-      flexWrap: "wrap"
+      alignItems: "center"
     }
   }, /*#__PURE__*/React.createElement("span", {
     style: {
@@ -1752,15 +1854,12 @@ function TrainingTab({
     style: {
       display: "flex",
       justifyContent: "space-between",
-      marginTop: 6,
-      flexWrap: "wrap",
-      gap: 10
+      marginTop: 6
     }
   }, /*#__PURE__*/React.createElement("div", {
     style: {
       display: "flex",
-      gap: 14,
-      flexWrap: "wrap"
+      gap: 14
     }
   }, /*#__PURE__*/React.createElement("span", {
     onClick: () => addBlock("single", 1),
@@ -1909,8 +2008,7 @@ function TrainingTab({
         display: "flex",
         gap: 14,
         marginTop: 8,
-        alignItems: "center",
-        flexWrap: "wrap"
+        alignItems: "center"
       }
     }, /*#__PURE__*/React.createElement("span", {
       onClick: () => handleDownload(s),
@@ -2020,8 +2118,7 @@ function ProgressieTab({
       display: "flex",
       gap: 10,
       alignItems: "center",
-      marginBottom: 20,
-      flexWrap: "wrap"
+      marginBottom: 20
     }
   }, /*#__PURE__*/React.createElement("div", {
     style: {
@@ -2137,7 +2234,7 @@ function MetingenTab({
   }, /*#__PURE__*/React.createElement("div", {
     style: {
       display: "grid",
-      gridTemplateColumns: "repeat(auto-fit, minmax(120px, 1fr))",
+      gridTemplateColumns: "repeat(3, 1fr)",
       gap: 12,
       marginBottom: 12
     }
@@ -2256,9 +2353,7 @@ function MetingenTab({
       border: `1px solid ${COLORS.borderSoft}`,
       borderRadius: 8,
       padding: "10px 14px",
-      background: COLORS.surface,
-      flexWrap: "wrap",
-      gap: 8
+      background: COLORS.surface
     }
   }, /*#__PURE__*/React.createElement("div", {
     style: {

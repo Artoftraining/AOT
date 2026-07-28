@@ -1,10 +1,11 @@
-const CACHE_NAME = "aot-trainer-v2";
+const CACHE_NAME = "aot-trainer-v3";
 
 const LOCAL_ASSETS = [
   "./",
   "./index.html",
   "./app.js",
   "./manifest.json",
+  "./logo.png",
   "./icon-192.png",
   "./icon-512.png",
   "./apple-touch-icon.png",
