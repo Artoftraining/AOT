@@ -5,9 +5,6 @@ const {
   useMemo,
   useRef
 } = React;
-
-// local-storage polyfill mimicking the Claude-hosted window.storage API,
-// so this file can stay near-identical to the Claude-artifact version.
 window.storage = {
   async get(key) {
     const raw = localStorage.getItem("aot_" + key);
@@ -43,7 +40,7 @@ window.storage = {
   }
 };
 
-// ================= AOT brand tokens (echt rood/zwart uit logo) =================
+// ================= AOT brand tokens =================
 const COLORS = {
   bg: "#121110",
   surface: "#1B1917",
@@ -637,13 +634,20 @@ function ExerciseCombobox({
   value,
   onChange,
   onPick,
-  library
+  library,
+  onAddToLibrary
 }) {
   const [open, setOpen] = useState(false);
+  const [addingNew, setAddingNew] = useState(false);
+  const [newGroups, setNewGroups] = useState([]);
   const ref = useRef(null);
   useEffect(() => {
     const onDocClick = e => {
-      if (ref.current && !ref.current.contains(e.target)) setOpen(false);
+      if (ref.current && !ref.current.contains(e.target)) {
+        setOpen(false);
+        setAddingNew(false);
+        setNewGroups([]);
+      }
     };
     document.addEventListener("mousedown", onDocClick);
     return () => document.removeEventListener("mousedown", onDocClick);
@@ -655,6 +659,16 @@ function ExerciseCombobox({
       items: library.filter(ex => ex.groups.includes(g.id) && (!q || ex.name.toLowerCase().includes(q)))
     })).filter(g => g.items.length > 0);
   }, [library, q]);
+  const exactMatch = useMemo(() => library.some(ex => ex.name.trim().toLowerCase() === q), [library, q]);
+  const canOfferAdd = !!q && !exactMatch && onAddToLibrary;
+  const toggleNewGroup = id => setNewGroups(gr => gr.includes(id) ? gr.filter(x => x !== id) : [...gr, id]);
+  const confirmAdd = () => {
+    if (newGroups.length === 0) return;
+    onAddToLibrary(value.trim(), newGroups);
+    setAddingNew(false);
+    setNewGroups([]);
+    setOpen(false);
+  };
   return /*#__PURE__*/React.createElement("div", {
     ref: ref,
     style: {
@@ -666,9 +680,10 @@ function ExerciseCombobox({
     onChange: e => {
       onChange(e.target.value);
       setOpen(true);
+      setAddingNew(false);
     },
     onFocus: () => setOpen(true)
-  }), open && grouped.length > 0 && /*#__PURE__*/React.createElement("div", {
+  }), open && (grouped.length > 0 || canOfferAdd) && /*#__PURE__*/React.createElement("div", {
     style: {
       position: "absolute",
       top: "calc(100% + 4px)",
@@ -678,7 +693,7 @@ function ExerciseCombobox({
       background: COLORS.surfaceRaised,
       border: `1px solid ${COLORS.border}`,
       borderRadius: 8,
-      maxHeight: 260,
+      maxHeight: 320,
       overflowY: "auto",
       boxShadow: "0 8px 24px rgba(0,0,0,0.5)"
     }
@@ -712,7 +727,60 @@ function ExerciseCombobox({
     },
     onMouseEnter: e => e.currentTarget.style.background = COLORS.bg,
     onMouseLeave: e => e.currentTarget.style.background = "transparent"
-  }, ex.name))))));
+  }, ex.name)))), canOfferAdd && /*#__PURE__*/React.createElement("div", {
+    onMouseDown: e => e.preventDefault(),
+    style: {
+      borderTop: grouped.length > 0 ? `1px solid ${COLORS.borderSoft}` : "none",
+      padding: 10
+    }
+  }, !addingNew ? /*#__PURE__*/React.createElement("div", {
+    onClick: () => setAddingNew(true),
+    style: {
+      color: COLORS.accent,
+      fontSize: 12.5,
+      fontWeight: 700,
+      cursor: "pointer",
+      padding: "2px 2px"
+    }
+  }, "+ \"", value.trim(), "\" toevoegen aan bibliotheek") : /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 11,
+      color: COLORS.textFaint,
+      marginBottom: 6
+    }
+  }, "Spiergroep(en) voor \"", value.trim(), "\":"), /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "flex",
+      flexWrap: "wrap",
+      gap: 6,
+      marginBottom: 8
+    }
+  }, MUSCLE_GROUPS.map(g => {
+    const active = newGroups.includes(g.id);
+    return /*#__PURE__*/React.createElement("div", {
+      key: g.id,
+      onClick: () => toggleNewGroup(g.id),
+      title: g.label,
+      style: {
+        fontSize: 11,
+        fontWeight: 700,
+        padding: "5px 9px",
+        borderRadius: 5,
+        cursor: "pointer",
+        border: `1px solid ${active ? COLORS.accent : COLORS.border}`,
+        background: active ? COLORS.accentSoft : "transparent",
+        color: active ? COLORS.accent : COLORS.textMuted
+      }
+    }, g.short);
+  })), /*#__PURE__*/React.createElement(Btn, {
+    onClick: confirmAdd,
+    disabled: newGroups.length === 0,
+    style: {
+      width: "100%",
+      padding: "7px 10px",
+      fontSize: 12
+    }
+  }, "Toevoegen aan bibliotheek")))));
 }
 
 // ================= library modal =================
@@ -1038,6 +1106,20 @@ function TrainingTracker() {
     }
   };
   const selectedClient = clients.find(c => c.id === selectedId);
+  const addLibraryExercise = (name, groups) => {
+    const entry = {
+      id: uid(),
+      name,
+      groups
+    };
+    const nextState = {
+      ...libState,
+      customExercises: [...libState.customExercises, entry]
+    };
+    setLibState(nextState);
+    saveLibraryState(nextState);
+    return entry;
+  };
   const exportAll = async () => {
     const clientData = {};
     for (const c of clients) clientData[c.id] = await loadClientData(c.id);
@@ -1364,7 +1446,8 @@ function TrainingTracker() {
     data: data,
     persist: persist,
     library: library,
-    clientName: selectedClient.name
+    clientName: selectedClient.name,
+    onAddToLibrary: addLibraryExercise
   }), tab === "progressie" && /*#__PURE__*/React.createElement(ProgressieTab, {
     data: data
   }), tab === "metingen" && /*#__PURE__*/React.createElement(MetingenTab, {
@@ -1395,7 +1478,8 @@ function emptyExercise() {
     id: uid(),
     name: "",
     mode: "reps",
-    sets: [emptySet("reps")]
+    sets: [emptySet("reps")],
+    notes: ""
   };
 }
 function emptyBlock(type = "single", exerciseCount = 1) {
@@ -1436,7 +1520,8 @@ function TrainingTab({
   data,
   persist,
   library,
-  clientName
+  clientName,
+  onAddToLibrary
 }) {
   const [showForm, setShowForm] = useState(false);
   const [expandedId, setExpandedId] = useState(null);
@@ -1519,6 +1604,18 @@ function TrainingTab({
       } : b)
     }));
   };
+  const updateExerciseNotes = (blockId, exId, notes) => {
+    setForm(f => ({
+      ...f,
+      blocks: f.blocks.map(b => b.id === blockId ? {
+        ...b,
+        exercises: b.exercises.map(ex => ex.id === exId ? {
+          ...ex,
+          notes
+        } : ex)
+      } : b)
+    }));
+  };
   const setExerciseMode = (blockId, exId, mode) => setForm(f => ({
     ...f,
     blocks: f.blocks.map(b => b.id === blockId ? {
@@ -1576,6 +1673,7 @@ function TrainingTab({
       ...b,
       exercises: b.exercises.filter(ex => ex.name.trim()).map(ex => ({
         ...ex,
+        notes: (ex.notes || "").trim(),
         sets: ex.sets.filter(s => s.reps !== "" || s.weight !== "" || s.duration !== "")
       })).filter(ex => ex.sets.length > 0)
     })).filter(b => b.exercises.length > 0);
@@ -1611,6 +1709,7 @@ function TrainingTab({
             lines.push(`  set ${si + 1}: ${set.reps} reps${set.weight ? ` @ ${set.weight}kg` : ""}`);
           }
         });
+        if (ex.notes) lines.push(`  (${ex.notes})`);
       });
       lines.push("");
     });
@@ -1629,7 +1728,7 @@ function TrainingTab({
       const badge = b.type !== "single" ? `<div style="display:inline-block;background:#CF5550;color:#fff;font-size:11px;font-weight:700;letter-spacing:.05em;text-transform:uppercase;padding:3px 9px;border-radius:4px;margin-bottom:8px;">${blockBadgeLabel(b.type)}</div>` : "";
       const exercisesHtml = b.exercises.map(ex => {
         const setsHtml = ex.sets.map((set, si) => ex.mode === "time" ? `<span style="display:inline-block;background:#1B1917;border:1px solid #37332E;border-radius:4px;padding:3px 8px;margin:2px;font-family:monospace;font-size:12px;color:#ddd;">${fmtDuration(set.duration)}${set.weight ? ` · ${set.weight}kg` : ""}</span>` : `<span style="display:inline-block;background:#1B1917;border:1px solid #37332E;border-radius:4px;padding:3px 8px;margin:2px;font-family:monospace;font-size:12px;color:#ddd;">${set.reps}×${set.weight || 0}kg</span>`).join("");
-        return `<div style="margin-bottom:10px;"><div style="font-weight:700;color:#fff;margin-bottom:4px;">${ex.name}</div><div>${setsHtml}</div></div>`;
+        return `<div style="margin-bottom:10px;"><div style="font-weight:700;color:#fff;margin-bottom:4px;">${ex.name}</div><div>${setsHtml}</div>${ex.notes ? `<div style="font-size:12px;color:#A69E92;font-style:italic;margin-top:4px;">${ex.notes}</div>` : ""}</div>`;
       }).join("");
       return `<div style="border:1px solid #37332E;border-radius:8px;padding:14px;margin-bottom:12px;">${badge}${exercisesHtml}</div>`;
     }).join("");
@@ -1747,7 +1846,8 @@ function TrainingTab({
     value: ex.name,
     onChange: name => updateExerciseName(block.id, ex.id, name),
     onPick: picked => applyAutofill(block.id, ex.id, picked.name),
-    library: library
+    library: library,
+    onAddToLibrary: onAddToLibrary
   })), /*#__PURE__*/React.createElement(Segmented, {
     options: [{
       id: "reps",
@@ -1842,7 +1942,18 @@ function TrainingTab({
       cursor: "pointer",
       marginTop: 2
     }
-  }, "+ set toevoegen")))), /*#__PURE__*/React.createElement("span", {
+  }, "+ set toevoegen")), /*#__PURE__*/React.createElement("div", {
+    style: {
+      marginTop: 10
+    }
+  }, /*#__PURE__*/React.createElement(Input, {
+    placeholder: "Opmerking bij deze oefening (optioneel) — bv. techniekfocus, tempo, ROM...",
+    value: ex.notes || "",
+    onChange: e => updateExerciseNotes(block.id, ex.id, e.target.value),
+    style: {
+      fontSize: 12.5
+    }
+  })))), /*#__PURE__*/React.createElement("span", {
     onClick: () => addExerciseToBlock(block.id),
     style: {
       color: COLORS.accent,
@@ -2003,7 +2114,14 @@ function TrainingTab({
         padding: "3px 8px",
         color: COLORS.textMuted
       }
-    }, ex.mode === "time" ? `${fmtDuration(set.duration)}${set.weight ? ` · ${set.weight}kg` : ""}` : `${set.reps}×${set.weight || 0}kg`))))))), /*#__PURE__*/React.createElement("div", {
+    }, ex.mode === "time" ? `${fmtDuration(set.duration)}${set.weight ? ` · ${set.weight}kg` : ""}` : `${set.reps}×${set.weight || 0}kg`))), ex.notes && /*#__PURE__*/React.createElement("div", {
+      style: {
+        fontSize: 11.5,
+        color: COLORS.textMuted,
+        fontStyle: "italic",
+        marginTop: 4
+      }
+    }, ex.notes))))), /*#__PURE__*/React.createElement("div", {
       style: {
         display: "flex",
         gap: 14,
