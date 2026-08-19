@@ -1,4 +1,4 @@
-const CACHE_NAME = "aot-trainer-v3";
+const CACHE_NAME = "aot-trainer-v4";
 
 const LOCAL_ASSETS = [
   "./",
@@ -53,18 +53,18 @@ self.addEventListener("activate", (event) => {
 
 self.addEventListener("fetch", (event) => {
   if (event.request.method !== "GET") return;
+  // network-first: always try to get the freshest version when online.
+  // the cache is only used as an offline fallback, never as the primary source —
+  // this is what prevents an installed home-screen icon from getting stuck on an old version.
   event.respondWith(
-    caches.match(event.request).then((cached) => {
-      if (cached) return cached;
-      return fetch(event.request)
-        .then((response) => {
-          if (response && response.status === 200) {
-            const clone = response.clone();
-            caches.open(CACHE_NAME).then((cache) => cache.put(event.request, clone));
-          }
-          return response;
-        })
-        .catch(() => cached);
-    })
+    fetch(event.request)
+      .then((response) => {
+        if (response && response.status === 200) {
+          const clone = response.clone();
+          caches.open(CACHE_NAME).then((cache) => cache.put(event.request, clone));
+        }
+        return response;
+      })
+      .catch(() => caches.match(event.request))
   );
 });

@@ -40,7 +40,7 @@ window.storage = {
   }
 };
 
-// ================= AOT brand tokens =================
+// ================= AOT brand tokens (rood - wit - zwart) =================
 const COLORS = {
   bg: "#121110",
   surface: "#1B1917",
@@ -317,12 +317,52 @@ async function saveClientsList(list) {
     console.error("Kon klantenlijst niet opslaan", e);
   }
 }
+function normalizeSession(s) {
+  if (s && Array.isArray(s.blocks)) {
+    return {
+      ...s,
+      blocks: s.blocks.map(b => ({
+        ...b,
+        exercises: (b.exercises || []).map(ex => ({
+          ...ex,
+          mode: ex.mode || "reps",
+          notes: ex.notes || "",
+          sets: ex.sets || []
+        }))
+      }))
+    };
+  }
+  // legacy sessions (pre-supersets) stored a flat "exercises" array — wrap it in a single block
+  if (s && Array.isArray(s.exercises)) {
+    return {
+      ...s,
+      blocks: [{
+        id: uid(),
+        type: "single",
+        exercises: s.exercises.map(ex => ({
+          ...ex,
+          mode: ex.mode || "reps",
+          notes: ex.notes || "",
+          sets: ex.sets || []
+        }))
+      }]
+    };
+  }
+  return {
+    ...s,
+    blocks: []
+  };
+}
 async function loadClientData(id) {
   try {
     const res = await window.storage.get(`client-data:${id}`, false);
-    return res ? JSON.parse(res.value) : {
+    const data = res ? JSON.parse(res.value) : {
       sessions: [],
       measurements: []
+    };
+    return {
+      sessions: (data.sessions || []).map(normalizeSession),
+      measurements: data.measurements || []
     };
   } catch {
     return {
@@ -792,6 +832,7 @@ function LibraryModal({
 }) {
   const [newName, setNewName] = useState("");
   const [newGroups, setNewGroups] = useState([]);
+  const [search, setSearch] = useState("");
   const byGroup = groupId => library.filter(ex => ex.groups.includes(groupId)).slice().sort((a, b) => {
     const order = libState.order[groupId] || [];
     const ia = order.indexOf(a.id);
@@ -801,6 +842,11 @@ function LibraryModal({
     if (ib === -1) return -1;
     return ia - ib;
   });
+  const q = search.trim().toLowerCase();
+  const visibleInGroup = groupId => {
+    const all = byGroup(groupId);
+    return q ? all.filter(ex => ex.name.toLowerCase().includes(q)) : all;
+  };
   const move = (groupId, id, dir) => {
     const list = byGroup(groupId).map(e => e.id);
     const i = list.indexOf(id);
@@ -882,94 +928,105 @@ function LibraryModal({
   }, "Oefeningenbibliotheek"), /*#__PURE__*/React.createElement(Btn, {
     variant: "ghost",
     onClick: onClose
-  }, "Sluiten")), MUSCLE_GROUPS.map(g => /*#__PURE__*/React.createElement("div", {
-    key: g.id,
+  }, "Sluiten")), /*#__PURE__*/React.createElement(Input, {
+    placeholder: "Zoek een oefening...",
+    value: search,
+    onChange: e => setSearch(e.target.value),
     style: {
-      marginBottom: 20
+      marginBottom: 18
     }
-  }, /*#__PURE__*/React.createElement("div", {
-    style: {
-      fontSize: 12,
-      fontWeight: 700,
-      letterSpacing: "0.05em",
-      textTransform: "uppercase",
-      color: COLORS.accent,
-      marginBottom: 8,
-      borderBottom: `1px solid ${COLORS.borderSoft}`,
-      paddingBottom: 6
-    }
-  }, g.label), /*#__PURE__*/React.createElement("div", {
-    style: {
-      display: "flex",
-      flexDirection: "column",
-      gap: 4
-    }
-  }, byGroup(g.id).map(ex => /*#__PURE__*/React.createElement("div", {
-    key: ex.id,
-    style: {
-      display: "flex",
-      alignItems: "center",
-      justifyContent: "space-between",
-      padding: "6px 10px",
-      background: COLORS.surface,
-      border: `1px solid ${COLORS.borderSoft}`,
-      borderRadius: 6
-    }
-  }, /*#__PURE__*/React.createElement("div", {
-    style: {
-      display: "flex",
-      alignItems: "center",
-      gap: 8
-    }
-  }, /*#__PURE__*/React.createElement("span", {
-    style: {
-      fontSize: 13,
-      color: COLORS.text
-    }
-  }, ex.name), ex.groups.length > 1 && ex.groups.filter(x => x !== g.id).map(x => /*#__PURE__*/React.createElement("span", {
-    key: x,
-    style: {
-      fontSize: 9.5,
-      color: COLORS.textFaint,
-      border: `1px solid ${COLORS.border}`,
-      borderRadius: 4,
-      padding: "1px 5px"
-    }
-  }, groupShort(x)))), /*#__PURE__*/React.createElement("div", {
-    style: {
-      display: "flex",
-      gap: 4,
-      alignItems: "center"
-    }
-  }, /*#__PURE__*/React.createElement("span", {
-    onClick: () => move(g.id, ex.id, -1),
-    style: {
-      cursor: "pointer",
-      color: COLORS.textFaint,
-      padding: "0 4px"
-    }
-  }, "▲"), /*#__PURE__*/React.createElement("span", {
-    onClick: () => move(g.id, ex.id, 1),
-    style: {
-      cursor: "pointer",
-      color: COLORS.textFaint,
-      padding: "0 4px"
-    }
-  }, "▼"), /*#__PURE__*/React.createElement("span", {
-    onClick: () => removeExercise(ex.id),
-    style: {
-      cursor: "pointer",
-      color: COLORS.accent,
-      fontSize: 11.5,
-      marginLeft: 6
-    }
-  }, "verwijder")))), byGroup(g.id).length === 0 && /*#__PURE__*/React.createElement("div", {
-    style: {
-      fontSize: 12,
-      color: COLORS.textFaint,
-      padding: "4px 2px"
-    }
-  }, "Geen oefeningen in deze groep.")))), /*#__PURE__*/React.createElement("div", {
+  }), MUSCLE_GROUPS.map(g => {
+    const items = visibleInGroup(g.id);
+    if (q && items.length === 0) return null;
+    return /*#__PURE__*/React.createElement("div", {
+      key: g.id,
+      style: {
+        marginBottom: 20
+      }
+    }, /*#__PURE__*/React.createElement("div", {
+      style: {
+        fontSize: 12,
+        fontWeight: 700,
+        letterSpacing: "0.05em",
+        textTransform: "uppercase",
+        color: COLORS.accent,
+        marginBottom: 8,
+        borderBottom: `1px solid ${COLORS.borderSoft}`,
+        paddingBottom: 6
+      }
+    }, g.label), /*#__PURE__*/React.createElement("div", {
+      style: {
+        display: "flex",
+        flexDirection: "column",
+        gap: 4
+      }
+    }, items.map(ex => /*#__PURE__*/React.createElement("div", {
+      key: ex.id,
+      style: {
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "space-between",
+        padding: "6px 10px",
+        background: COLORS.surface,
+        border: `1px solid ${COLORS.borderSoft}`,
+        borderRadius: 6
+      }
+    }, /*#__PURE__*/React.createElement("div", {
+      style: {
+        display: "flex",
+        alignItems: "center",
+        gap: 8
+      }
+    }, /*#__PURE__*/React.createElement("span", {
+      style: {
+        fontSize: 13,
+        color: COLORS.text
+      }
+    }, ex.name), ex.groups.length > 1 && ex.groups.filter(x => x !== g.id).map(x => /*#__PURE__*/React.createElement("span", {
+      key: x,
+      style: {
+        fontSize: 9.5,
+        color: COLORS.textFaint,
+        border: `1px solid ${COLORS.border}`,
+        borderRadius: 4,
+        padding: "1px 5px"
+      }
+    }, groupShort(x)))), /*#__PURE__*/React.createElement("div", {
+      style: {
+        display: "flex",
+        gap: 4,
+        alignItems: "center"
+      }
+    }, /*#__PURE__*/React.createElement("span", {
+      onClick: () => move(g.id, ex.id, -1),
+      style: {
+        cursor: "pointer",
+        color: COLORS.textFaint,
+        padding: "0 4px"
+      }
+    }, "▲"), /*#__PURE__*/React.createElement("span", {
+      onClick: () => move(g.id, ex.id, 1),
+      style: {
+        cursor: "pointer",
+        color: COLORS.textFaint,
+        padding: "0 4px"
+      }
+    }, "▼"), /*#__PURE__*/React.createElement("span", {
+      onClick: () => removeExercise(ex.id),
+      style: {
+        cursor: "pointer",
+        color: COLORS.accent,
+        fontSize: 11.5,
+        marginLeft: 6
+      }
+    }, "verwijder")))), items.length === 0 && /*#__PURE__*/React.createElement("div", {
+      style: {
+        fontSize: 12,
+        color: COLORS.textFaint,
+        padding: "4px 2px"
+      }
+    }, "Geen oefeningen in deze groep.")));
+  }), /*#__PURE__*/React.createElement("div", {
     style: {
       background: COLORS.surface,
       border: `1px solid ${COLORS.border}`,
@@ -1035,6 +1092,7 @@ function TrainingTracker() {
   const [loadingData, setLoadingData] = useState(false);
   const [tab, setTab] = useState("training");
   const [newClientName, setNewClientName] = useState("");
+  const [clientSearch, setClientSearch] = useState("");
   const [confirmDelete, setConfirmDelete] = useState(null);
   const [libState, setLibState] = useState({
     hiddenIds: [],
@@ -1106,6 +1164,7 @@ function TrainingTracker() {
     }
   };
   const selectedClient = clients.find(c => c.id === selectedId);
+  const filteredClients = clients.filter(c => c.name.toLowerCase().includes(clientSearch.trim().toLowerCase()));
   const addLibraryExercise = (name, groups) => {
     const entry = {
       id: uid(),
@@ -1217,9 +1276,17 @@ function TrainingTracker() {
     style: {
       fontSize: 11,
       color: COLORS.textFaint,
-      marginBottom: 20
+      marginBottom: 10
     }
-  }, "Klanten & progressie"), /*#__PURE__*/React.createElement("div", {
+  }, "Klanten & progressie"), clients.length > 3 && /*#__PURE__*/React.createElement(Input, {
+    placeholder: "Zoek klant...",
+    value: clientSearch,
+    onChange: e => setClientSearch(e.target.value),
+    style: {
+      marginBottom: 10,
+      fontSize: 12.5
+    }
+  }), /*#__PURE__*/React.createElement("div", {
     style: {
       flex: 1,
       overflowY: "auto",
@@ -1238,7 +1305,12 @@ function TrainingTracker() {
       fontSize: 12,
       lineHeight: 1.5
     }
-  }, "Nog geen klanten. Voeg er hieronder een toe."), clients.map(c => /*#__PURE__*/React.createElement("div", {
+  }, "Nog geen klanten. Voeg er hieronder een toe."), !loadingClients && clients.length > 0 && filteredClients.length === 0 && /*#__PURE__*/React.createElement("div", {
+    style: {
+      color: COLORS.textFaint,
+      fontSize: 12
+    }
+  }, "Geen klant gevonden voor \"", clientSearch, "\"."), filteredClients.map(c => /*#__PURE__*/React.createElement("div", {
     key: c.id,
     onClick: () => setSelectedId(c.id),
     style: {
@@ -1479,7 +1551,8 @@ function emptyExercise() {
     name: "",
     mode: "reps",
     sets: [emptySet("reps")],
-    notes: ""
+    notes: "",
+    durationUnit: "sec"
   };
 }
 function emptyBlock(type = "single", exerciseCount = 1) {
@@ -1624,6 +1697,16 @@ function TrainingTab({
         ...ex,
         mode,
         sets: [emptySet(mode)]
+      } : ex)
+    } : b)
+  }));
+  const setExerciseDurationUnit = (blockId, exId, durationUnit) => setForm(f => ({
+    ...f,
+    blocks: f.blocks.map(b => b.id === blockId ? {
+      ...b,
+      exercises: b.exercises.map(ex => ex.id === exId ? {
+        ...ex,
+        durationUnit
       } : ex)
     } : b)
   }));
@@ -1858,6 +1941,16 @@ function TrainingTab({
     }],
     value: ex.mode,
     onChange: m => setExerciseMode(block.id, ex.id, m)
+  }), ex.mode === "time" && /*#__PURE__*/React.createElement(Segmented, {
+    options: [{
+      id: "sec",
+      label: "sec"
+    }, {
+      id: "min",
+      label: "min"
+    }],
+    value: ex.durationUnit || "sec",
+    onChange: u => setExerciseDurationUnit(block.id, ex.id, u)
   }), block.exercises.length > 1 && /*#__PURE__*/React.createElement(Btn, {
     variant: "danger",
     onClick: () => removeExerciseFromBlock(block.id, ex.id),
@@ -1887,8 +1980,12 @@ function TrainingTab({
   }, "#", sIdx + 1), ex.mode === "time" ? /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement(Input, {
     type: "number",
     placeholder: "tijd",
-    value: s.duration,
-    onChange: e => updateSet(block.id, ex.id, s.id, "duration", e.target.value),
+    value: s.duration === "" ? "" : ex.durationUnit === "min" ? Number(s.duration) / 60 : s.duration,
+    onChange: e => {
+      const raw = e.target.value;
+      const seconds = raw === "" ? "" : String(ex.durationUnit === "min" ? Math.round(Number(raw) * 60) : Number(raw));
+      updateSet(block.id, ex.id, s.id, "duration", seconds);
+    },
     style: {
       width: 90,
       fontFamily: monoFont
@@ -1898,7 +1995,7 @@ function TrainingTab({
       color: COLORS.textFaint,
       fontSize: 11
     }
-  }, "sec")) : /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement(Input, {
+  }, ex.durationUnit === "min" ? "min" : "sec")) : /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement(Input, {
     type: "number",
     placeholder: "reps",
     value: s.reps,
@@ -2014,7 +2111,7 @@ function TrainingTab({
     }
   }, "Nog geen sessies gelogd. Klik op \"+ Nieuwe sessie\" om te starten."), sorted.map(s => {
     const open = expandedId === s.id;
-    const totalExercises = s.blocks.reduce((n, b) => n + b.exercises.length, 0);
+    const totalExercises = (s.blocks || []).reduce((n, b) => n + b.exercises.length, 0);
     return /*#__PURE__*/React.createElement("div", {
       key: s.id,
       style: {
@@ -2067,7 +2164,7 @@ function TrainingTab({
         marginBottom: 10,
         fontStyle: "italic"
       }
-    }, s.notes), s.blocks.map(b => /*#__PURE__*/React.createElement("div", {
+    }, s.notes), (s.blocks || []).map(b => /*#__PURE__*/React.createElement("div", {
       key: b.id,
       style: {
         marginBottom: 12
@@ -2299,14 +2396,19 @@ function MetingenTab({
     date: todayISO(),
     weight: "",
     bodyFat: "",
-    waist: "",
-    chest: "",
-    arm: "",
+    fatFreeMass: "",
+    muscleMass: "",
+    bodyWater: "",
+    boneMass: "",
+    visceralFat: "",
+    bmr: "",
+    metabolicAge: "",
     notes: ""
   };
   const [form, setForm] = useState(empty);
+  const hasAnyValue = f => [f.weight, f.bodyFat, f.fatFreeMass, f.muscleMass, f.bodyWater, f.boneMass, f.visceralFat, f.bmr, f.metabolicAge].some(v => v !== "");
   const saveMeasurement = () => {
-    if (!form.weight && !form.bodyFat && !form.waist && !form.chest && !form.arm) return;
+    if (!hasAnyValue(form)) return;
     const entry = {
       id: uid(),
       ...form
@@ -2330,6 +2432,7 @@ function MetingenTab({
       value: Number(m.weight)
     }));
   }, [data.measurements]);
+  const fields = [["weight", "Gewicht (kg)"], ["bodyFat", "Vetpercentage (%)"], ["fatFreeMass", "Vetvrije massa (kg)"], ["muscleMass", "Spiermassa (kg)"], ["bodyWater", "Lichaamswater (%)"], ["boneMass", "Botmassa (kg)"], ["visceralFat", "Visceraal vetniveau"], ["bmr", "BMR (kcal)"], ["metabolicAge", "Metabolische leeftijd (jaar)"]];
   return /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("div", {
     style: {
       display: "flex",
@@ -2338,7 +2441,7 @@ function MetingenTab({
       marginBottom: 16
     }
   }, /*#__PURE__*/React.createElement(SectionTitle, {
-    sub: `${sorted.length} meting${sorted.length === 1 ? "" : "en"} gelogd`
+    sub: `${sorted.length} meting${sorted.length === 1 ? "" : "en"} gelogd — velden van je Tanita-impedantiemeter`
   }, "Lichaamsmetingen"), !showForm && /*#__PURE__*/React.createElement(Btn, {
     onClick: () => setShowForm(true)
   }, "+ Nieuwe meting")), showForm && /*#__PURE__*/React.createElement("div", {
@@ -2351,69 +2454,36 @@ function MetingenTab({
     }
   }, /*#__PURE__*/React.createElement("div", {
     style: {
-      display: "grid",
-      gridTemplateColumns: "repeat(3, 1fr)",
-      gap: 12,
-      marginBottom: 12
+      marginBottom: 12,
+      width: 180
     }
-  }, /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement(Label, null, "Datum"), /*#__PURE__*/React.createElement(Input, {
+  }, /*#__PURE__*/React.createElement(Label, null, "Datum"), /*#__PURE__*/React.createElement(Input, {
     type: "date",
     value: form.date,
     onChange: e => setForm(f => ({
       ...f,
       date: e.target.value
     }))
-  })), /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement(Label, null, "Gewicht (kg)"), /*#__PURE__*/React.createElement(Input, {
+  })), /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "grid",
+      gridTemplateColumns: "repeat(auto-fit, minmax(140px, 1fr))",
+      gap: 12,
+      marginBottom: 12
+    }
+  }, fields.map(([key, label]) => /*#__PURE__*/React.createElement("div", {
+    key: key
+  }, /*#__PURE__*/React.createElement(Label, null, label), /*#__PURE__*/React.createElement(Input, {
     type: "number",
-    value: form.weight,
+    value: form[key],
     onChange: e => setForm(f => ({
       ...f,
-      weight: e.target.value
+      [key]: e.target.value
     })),
     style: {
       fontFamily: monoFont
     }
-  })), /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement(Label, null, "Vetpercentage (%)"), /*#__PURE__*/React.createElement(Input, {
-    type: "number",
-    value: form.bodyFat,
-    onChange: e => setForm(f => ({
-      ...f,
-      bodyFat: e.target.value
-    })),
-    style: {
-      fontFamily: monoFont
-    }
-  })), /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement(Label, null, "Taille (cm)"), /*#__PURE__*/React.createElement(Input, {
-    type: "number",
-    value: form.waist,
-    onChange: e => setForm(f => ({
-      ...f,
-      waist: e.target.value
-    })),
-    style: {
-      fontFamily: monoFont
-    }
-  })), /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement(Label, null, "Borst (cm)"), /*#__PURE__*/React.createElement(Input, {
-    type: "number",
-    value: form.chest,
-    onChange: e => setForm(f => ({
-      ...f,
-      chest: e.target.value
-    })),
-    style: {
-      fontFamily: monoFont
-    }
-  })), /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement(Label, null, "Arm (cm)"), /*#__PURE__*/React.createElement(Input, {
-    type: "number",
-    value: form.arm,
-    onChange: e => setForm(f => ({
-      ...f,
-      arm: e.target.value
-    })),
-    style: {
-      fontFamily: monoFont
-    }
-  }))), /*#__PURE__*/React.createElement("div", {
+  })))), /*#__PURE__*/React.createElement("div", {
     style: {
       marginBottom: 14
     }
@@ -2506,7 +2576,70 @@ function MetingenTab({
     style: {
       color: COLORS.text
     }
-  }, m.bodyFat), "% vet"), m.waist && /*#__PURE__*/React.createElement("span", {
+  }, m.bodyFat), "% vet"), m.fatFreeMass && /*#__PURE__*/React.createElement("span", {
+    style: {
+      fontSize: 12,
+      color: COLORS.textMuted
+    }
+  }, "vetvrij ", /*#__PURE__*/React.createElement("b", {
+    style: {
+      color: COLORS.text
+    }
+  }, m.fatFreeMass), "kg"), m.muscleMass && /*#__PURE__*/React.createElement("span", {
+    style: {
+      fontSize: 12,
+      color: COLORS.textMuted
+    }
+  }, "spier ", /*#__PURE__*/React.createElement("b", {
+    style: {
+      color: COLORS.text
+    }
+  }, m.muscleMass), "kg"), m.bodyWater && /*#__PURE__*/React.createElement("span", {
+    style: {
+      fontSize: 12,
+      color: COLORS.textMuted
+    }
+  }, "water ", /*#__PURE__*/React.createElement("b", {
+    style: {
+      color: COLORS.text
+    }
+  }, m.bodyWater), "%"), m.boneMass && /*#__PURE__*/React.createElement("span", {
+    style: {
+      fontSize: 12,
+      color: COLORS.textMuted
+    }
+  }, "bot ", /*#__PURE__*/React.createElement("b", {
+    style: {
+      color: COLORS.text
+    }
+  }, m.boneMass), "kg"), m.visceralFat && /*#__PURE__*/React.createElement("span", {
+    style: {
+      fontSize: 12,
+      color: COLORS.textMuted
+    }
+  }, "visceraal ", /*#__PURE__*/React.createElement("b", {
+    style: {
+      color: COLORS.text
+    }
+  }, m.visceralFat)), m.bmr && /*#__PURE__*/React.createElement("span", {
+    style: {
+      fontSize: 12,
+      color: COLORS.textMuted
+    }
+  }, "BMR ", /*#__PURE__*/React.createElement("b", {
+    style: {
+      color: COLORS.text
+    }
+  }, m.bmr), "kcal"), m.metabolicAge && /*#__PURE__*/React.createElement("span", {
+    style: {
+      fontSize: 12,
+      color: COLORS.textMuted
+    }
+  }, "metab. leeftijd ", /*#__PURE__*/React.createElement("b", {
+    style: {
+      color: COLORS.text
+    }
+  }, m.metabolicAge), "j"), m.waist && /*#__PURE__*/React.createElement("span", {
     style: {
       fontSize: 12,
       color: COLORS.textMuted
