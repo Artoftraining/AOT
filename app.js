@@ -1519,6 +1519,8 @@ function TrainingTracker() {
     persist: persist,
     library: library,
     clientName: selectedClient.name,
+    clientId: selectedClient.id,
+    clients: clients,
     onAddToLibrary: addLibraryExercise
   }), tab === "progressie" && /*#__PURE__*/React.createElement(ProgressieTab, {
     data: data
@@ -1538,11 +1540,15 @@ function emptySet(mode) {
   return mode === "time" ? {
     id: uid(),
     duration: "",
-    weight: ""
+    weight: "",
+    durationB: "",
+    weightB: ""
   } : {
     id: uid(),
     reps: "",
-    weight: ""
+    weight: "",
+    repsB: "",
+    weightB: ""
   };
 }
 function emptyExercise() {
@@ -1552,7 +1558,8 @@ function emptyExercise() {
     mode: "reps",
     sets: [emptySet("reps")],
     notes: "",
-    durationUnit: "sec"
+    durationUnit: "sec",
+    sharedWith: "both"
   };
 }
 function emptyBlock(type = "single", exerciseCount = 1) {
@@ -1594,21 +1601,28 @@ function TrainingTab({
   persist,
   library,
   clientName,
+  clientId,
+  clients,
   onAddToLibrary
 }) {
   const [showForm, setShowForm] = useState(false);
   const [expandedId, setExpandedId] = useState(null);
   const [copiedId, setCopiedId] = useState(null);
+  const [editingSessionId, setEditingSessionId] = useState(null);
   const [form, setForm] = useState({
     date: todayISO(),
     notes: "",
-    blocks: [emptyBlock("single", 1)]
+    blocks: [emptyBlock("single", 1)],
+    partnerId: ""
   });
   const resetForm = () => setForm({
     date: todayISO(),
     notes: "",
-    blocks: [emptyBlock("single", 1)]
+    blocks: [emptyBlock("single", 1)],
+    partnerId: ""
   });
+  const partnerOptions = (clients || []).filter(c => c.id !== clientId);
+  const partner = partnerOptions.find(c => c.id === form.partnerId) || null;
   const addBlock = (type, count) => setForm(f => ({
     ...f,
     blocks: [...f.blocks, emptyBlock(type, count)]
@@ -1710,6 +1724,16 @@ function TrainingTab({
       } : ex)
     } : b)
   }));
+  const setExerciseSharedWith = (blockId, exId, sharedWith) => setForm(f => ({
+    ...f,
+    blocks: f.blocks.map(b => b.id === blockId ? {
+      ...b,
+      exercises: b.exercises.map(ex => ex.id === exId ? {
+        ...ex,
+        sharedWith
+      } : ex)
+    } : b)
+  }));
   const addSet = (blockId, exId) => setForm(f => ({
     ...f,
     blocks: f.blocks.map(b => b.id === blockId ? {
@@ -1751,29 +1775,122 @@ function TrainingTab({
       } : ex)
     } : b)
   }));
-  const saveSession = () => {
-    const cleanBlocks = form.blocks.map(b => ({
-      ...b,
-      exercises: b.exercises.filter(ex => ex.name.trim()).map(ex => ({
-        ...ex,
+  const buildBlocksForPerspective = perspective => form.blocks.map(b => ({
+    ...b,
+    exercises: b.exercises.filter(ex => {
+      const shared = ex.sharedWith || "both";
+      if (perspective === "primary") return shared !== "onlyPartner";
+      return shared !== "onlyPrimary";
+    }).filter(ex => ex.name.trim()).map(ex => {
+      const shared = ex.sharedWith || "both";
+      const usePartnerFields = perspective === "partner" && shared === "both";
+      const sets = ex.sets.map(s => ex.mode === "time" ? {
+        id: uid(),
+        duration: (usePartnerFields ? s.durationB : s.duration) || "",
+        weight: (usePartnerFields ? s.weightB : s.weight) || ""
+      } : {
+        id: uid(),
+        reps: (usePartnerFields ? s.repsB : s.reps) || "",
+        weight: (usePartnerFields ? s.weightB : s.weight) || ""
+      }).filter(s => s.reps !== "" || s.weight !== "" || s.duration !== "");
+      return {
+        id: uid(),
+        name: ex.name,
+        mode: ex.mode,
+        durationUnit: ex.durationUnit || "sec",
         notes: (ex.notes || "").trim(),
-        sets: ex.sets.filter(s => s.reps !== "" || s.weight !== "" || s.duration !== "")
-      })).filter(ex => ex.sets.length > 0)
-    })).filter(b => b.exercises.length > 0);
-    if (cleanBlocks.length === 0) return;
-    const session = {
-      id: uid(),
-      date: form.date,
-      notes: form.notes.trim(),
-      blocks: cleanBlocks
-    };
-    const sessions = [session, ...data.sessions].sort((a, b) => a.date < b.date ? 1 : -1);
-    persist({
-      ...data,
-      sessions
-    });
+        sets
+      };
+    }).filter(ex => ex.sets.length > 0)
+  })).filter(b => b.exercises.length > 0);
+  const saveSession = async () => {
+    const originalSession = editingSessionId ? data.sessions.find(s => s.id === editingSessionId) : null;
+    if (partner) {
+      const primaryBlocks = buildBlocksForPerspective("primary");
+      const partnerBlocks = buildBlocksForPerspective("partner");
+      if (primaryBlocks.length === 0 && partnerBlocks.length === 0) return;
+      const primarySession = {
+        id: editingSessionId || uid(),
+        date: form.date,
+        notes: form.notes.trim(),
+        blocks: primaryBlocks,
+        duoWith: partner.name
+      };
+      const sessions = editingSessionId ? data.sessions.map(s => s.id === editingSessionId ? primarySession : s) : [primarySession, ...data.sessions].sort((a, b) => a.date < b.date ? 1 : -1);
+      persist({
+        ...data,
+        sessions
+      });
+
+      // only create the partner's own copy for brand-new duo sessions —
+      // editing an existing session only touches the client you're currently viewing.
+      if (!editingSessionId && partnerBlocks.length > 0) {
+        const partnerSession = {
+          id: uid(),
+          date: form.date,
+          notes: form.notes.trim(),
+          blocks: partnerBlocks,
+          duoWith: clientName
+        };
+        const partnerData = await loadClientData(partner.id);
+        const partnerSessions = [partnerSession, ...partnerData.sessions].sort((a, b) => a.date < b.date ? 1 : -1);
+        await saveClientData(partner.id, {
+          ...partnerData,
+          sessions: partnerSessions
+        });
+      }
+    } else {
+      const cleanBlocks = buildBlocksForPerspective("primary");
+      if (cleanBlocks.length === 0) return;
+      const session = {
+        id: editingSessionId || uid(),
+        date: form.date,
+        notes: form.notes.trim(),
+        blocks: cleanBlocks,
+        ...(originalSession && originalSession.duoWith ? {
+          duoWith: originalSession.duoWith
+        } : {})
+      };
+      const sessions = editingSessionId ? data.sessions.map(s => s.id === editingSessionId ? session : s) : [session, ...data.sessions].sort((a, b) => a.date < b.date ? 1 : -1);
+      persist({
+        ...data,
+        sessions
+      });
+    }
     resetForm();
     setShowForm(false);
+    setEditingSessionId(null);
+  };
+  const editSession = s => {
+    setForm({
+      date: s.date,
+      notes: s.notes || "",
+      partnerId: "",
+      blocks: (s.blocks || []).map(b => ({
+        id: uid(),
+        type: b.type,
+        exercises: b.exercises.map(ex => ({
+          id: uid(),
+          name: ex.name,
+          mode: ex.mode || "reps",
+          durationUnit: ex.durationUnit || "sec",
+          notes: ex.notes || "",
+          sharedWith: "both",
+          sets: (ex.sets || []).map(st => ({
+            id: uid(),
+            reps: st.reps || "",
+            weight: st.weight || "",
+            duration: st.duration || "",
+            repsB: "",
+            weightB: "",
+            durationB: ""
+          }))
+        }))
+      }))
+    });
+    setEditingSessionId(s.id);
+    setShowForm(true);
+    setExpandedId(null);
   };
   const deleteSession = id => persist({
     ...data,
@@ -1850,11 +1967,21 @@ function TrainingTab({
       padding: 18,
       marginBottom: 22
     }
-  }, /*#__PURE__*/React.createElement("div", {
+  }, editingSessionId && /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 11.5,
+      color: COLORS.accent,
+      fontWeight: 700,
+      marginBottom: 10,
+      textTransform: "uppercase",
+      letterSpacing: "0.04em"
+    }
+  }, "Sessie bewerken"), /*#__PURE__*/React.createElement("div", {
     style: {
       display: "flex",
       gap: 16,
-      marginBottom: 14
+      marginBottom: 14,
+      flexWrap: "wrap"
     }
   }, /*#__PURE__*/React.createElement("div", {
     style: {
@@ -1869,7 +1996,8 @@ function TrainingTab({
     }))
   })), /*#__PURE__*/React.createElement("div", {
     style: {
-      flex: 1
+      flex: 1,
+      minWidth: 200
     }
   }, /*#__PURE__*/React.createElement(Label, null, "Notities (optioneel)"), /*#__PURE__*/React.createElement(Input, {
     placeholder: "bv. focus op techniek, RPE hoog vandaag...",
@@ -1878,7 +2006,50 @@ function TrainingTab({
       ...f,
       notes: e.target.value
     }))
-  }))), form.blocks.map((block, bIdx) => /*#__PURE__*/React.createElement("div", {
+  })), !editingSessionId && partnerOptions.length > 0 && /*#__PURE__*/React.createElement("div", {
+    style: {
+      width: 190
+    }
+  }, /*#__PURE__*/React.createElement(Label, null, "Duo met (optioneel)"), /*#__PURE__*/React.createElement("select", {
+    value: form.partnerId,
+    onChange: e => setForm(f => ({
+      ...f,
+      partnerId: e.target.value
+    })),
+    style: {
+      fontFamily: bodyFont,
+      fontSize: 13,
+      background: COLORS.bg,
+      color: COLORS.text,
+      border: `1px solid ${COLORS.border}`,
+      borderRadius: 5,
+      padding: "8px 10px",
+      width: "100%"
+    }
+  }, /*#__PURE__*/React.createElement("option", {
+    value: ""
+  }, "Geen — solo sessie"), partnerOptions.map(c => /*#__PURE__*/React.createElement("option", {
+    key: c.id,
+    value: c.id
+  }, c.name))))), partner && /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 11.5,
+      color: COLORS.textMuted,
+      marginBottom: 14,
+      background: COLORS.bg,
+      border: `1px solid ${COLORS.borderSoft}`,
+      borderRadius: 6,
+      padding: "8px 10px"
+    }
+  }, "Duo-sessie tussen ", /*#__PURE__*/React.createElement("b", {
+    style: {
+      color: COLORS.text
+    }
+  }, clientName), " en ", /*#__PURE__*/React.createElement("b", {
+    style: {
+      color: COLORS.text
+    }
+  }, partner.name), ". Per oefening kan je aanduiden of ze samen dezelfde oefening doen (met eigen gewicht/reps) of dat een oefening enkel voor één van beiden is. Deze sessie wordt automatisch ook bij ", partner.name, " gelogd."), form.blocks.map((block, bIdx) => /*#__PURE__*/React.createElement("div", {
     key: block.id,
     style: {
       border: `1px solid ${block.type !== "single" ? COLORS.accent + "66" : COLORS.borderSoft}`,
@@ -1957,81 +2128,179 @@ function TrainingTab({
     style: {
       padding: "8px 10px"
     }
-  }, "Verwijder")), /*#__PURE__*/React.createElement("div", {
+  }, "Verwijder")), partner && /*#__PURE__*/React.createElement("div", {
+    style: {
+      marginBottom: 10
+    }
+  }, /*#__PURE__*/React.createElement(Segmented, {
+    options: [{
+      id: "both",
+      label: "Beiden"
+    }, {
+      id: "onlyPrimary",
+      label: `Enkel ${clientName}`
+    }, {
+      id: "onlyPartner",
+      label: `Enkel ${partner.name}`
+    }],
+    value: ex.sharedWith || "both",
+    onChange: v => setExerciseSharedWith(block.id, ex.id, v)
+  })), /*#__PURE__*/React.createElement("div", {
     style: {
       display: "flex",
       flexDirection: "column",
-      gap: 6
+      gap: 8
     }
-  }, ex.sets.map((s, sIdx) => /*#__PURE__*/React.createElement("div", {
-    key: s.id,
-    style: {
-      display: "flex",
-      gap: 8,
-      alignItems: "center"
-    }
-  }, /*#__PURE__*/React.createElement("span", {
-    style: {
-      fontFamily: monoFont,
-      fontSize: 11,
-      color: COLORS.textFaint,
-      width: 20
-    }
-  }, "#", sIdx + 1), ex.mode === "time" ? /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement(Input, {
-    type: "number",
-    placeholder: "tijd",
-    value: s.duration === "" ? "" : ex.durationUnit === "min" ? Number(s.duration) / 60 : s.duration,
-    onChange: e => {
-      const raw = e.target.value;
-      const seconds = raw === "" ? "" : String(ex.durationUnit === "min" ? Math.round(Number(raw) * 60) : Number(raw));
-      updateSet(block.id, ex.id, s.id, "duration", seconds);
-    },
-    style: {
-      width: 90,
-      fontFamily: monoFont
-    }
+  }, ex.sets.map((s, sIdx) => {
+    const showBoth = !!partner && (ex.sharedWith || "both") === "both";
+    return /*#__PURE__*/React.createElement("div", {
+      key: s.id,
+      style: {
+        display: "flex",
+        flexDirection: "column",
+        gap: 4
+      }
+    }, /*#__PURE__*/React.createElement("div", {
+      style: {
+        display: "flex",
+        gap: 8,
+        alignItems: "center",
+        flexWrap: "wrap"
+      }
+    }, /*#__PURE__*/React.createElement("span", {
+      style: {
+        fontFamily: monoFont,
+        fontSize: 11,
+        color: COLORS.textFaint,
+        width: 20
+      }
+    }, "#", sIdx + 1), showBoth && /*#__PURE__*/React.createElement("span", {
+      style: {
+        fontSize: 10.5,
+        color: COLORS.textFaint,
+        width: 66,
+        flexShrink: 0
+      }
+    }, clientName, ":"), ex.mode === "time" ? /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement(Input, {
+      type: "number",
+      placeholder: "tijd",
+      value: s.duration === "" ? "" : ex.durationUnit === "min" ? Number(s.duration) / 60 : s.duration,
+      onChange: e => {
+        const raw = e.target.value;
+        const seconds = raw === "" ? "" : String(ex.durationUnit === "min" ? Math.round(Number(raw) * 60) : Number(raw));
+        updateSet(block.id, ex.id, s.id, "duration", seconds);
+      },
+      style: {
+        width: 90,
+        fontFamily: monoFont
+      }
+    }), /*#__PURE__*/React.createElement("span", {
+      style: {
+        color: COLORS.textFaint,
+        fontSize: 11
+      }
+    }, ex.durationUnit === "min" ? "min" : "sec")) : /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement(Input, {
+      type: "number",
+      placeholder: "reps",
+      value: s.reps,
+      onChange: e => updateSet(block.id, ex.id, s.id, "reps", e.target.value),
+      style: {
+        width: 90,
+        fontFamily: monoFont
+      }
+    }), /*#__PURE__*/React.createElement("span", {
+      style: {
+        color: COLORS.textFaint,
+        fontSize: 12
+      }
+    }, "×")), /*#__PURE__*/React.createElement(Input, {
+      type: "number",
+      placeholder: "kg",
+      value: s.weight,
+      onChange: e => updateSet(block.id, ex.id, s.id, "weight", e.target.value),
+      style: {
+        width: 90,
+        fontFamily: monoFont
+      }
+    }), /*#__PURE__*/React.createElement("span", {
+      style: {
+        color: COLORS.textFaint,
+        fontSize: 11
+      }
+    }, "kg"), ex.sets.length > 1 && /*#__PURE__*/React.createElement("span", {
+      onClick: () => removeSet(block.id, ex.id, s.id),
+      style: {
+        color: COLORS.textFaint,
+        fontSize: 11,
+        cursor: "pointer",
+        marginLeft: 4
+      }
+    }, "verwijder")), showBoth && /*#__PURE__*/React.createElement("div", {
+      style: {
+        display: "flex",
+        gap: 8,
+        alignItems: "center",
+        flexWrap: "wrap"
+      }
+    }, /*#__PURE__*/React.createElement("span", {
+      style: {
+        width: 20
+      }
+    }), /*#__PURE__*/React.createElement("span", {
+      style: {
+        fontSize: 10.5,
+        color: COLORS.accent,
+        width: 66,
+        flexShrink: 0
+      }
+    }, partner.name, ":"), ex.mode === "time" ? /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement(Input, {
+      type: "number",
+      placeholder: "tijd",
+      value: s.durationB === "" ? "" : ex.durationUnit === "min" ? Number(s.durationB) / 60 : s.durationB,
+      onChange: e => {
+        const raw = e.target.value;
+        const seconds = raw === "" ? "" : String(ex.durationUnit === "min" ? Math.round(Number(raw) * 60) : Number(raw));
+        updateSet(block.id, ex.id, s.id, "durationB", seconds);
+      },
+      style: {
+        width: 90,
+        fontFamily: monoFont
+      }
+    }), /*#__PURE__*/React.createElement("span", {
+      style: {
+        color: COLORS.textFaint,
+        fontSize: 11
+      }
+    }, ex.durationUnit === "min" ? "min" : "sec")) : /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement(Input, {
+      type: "number",
+      placeholder: "reps",
+      value: s.repsB || "",
+      onChange: e => updateSet(block.id, ex.id, s.id, "repsB", e.target.value),
+      style: {
+        width: 90,
+        fontFamily: monoFont
+      }
+    }), /*#__PURE__*/React.createElement("span", {
+      style: {
+        color: COLORS.textFaint,
+        fontSize: 12
+      }
+    }, "×")), /*#__PURE__*/React.createElement(Input, {
+      type: "number",
+      placeholder: "kg",
+      value: s.weightB || "",
+      onChange: e => updateSet(block.id, ex.id, s.id, "weightB", e.target.value),
+      style: {
+        width: 90,
+        fontFamily: monoFont
+      }
+    }), /*#__PURE__*/React.createElement("span", {
+      style: {
+        color: COLORS.textFaint,
+        fontSize: 11
+      }
+    }, "kg")));
   }), /*#__PURE__*/React.createElement("span", {
-    style: {
-      color: COLORS.textFaint,
-      fontSize: 11
-    }
-  }, ex.durationUnit === "min" ? "min" : "sec")) : /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement(Input, {
-    type: "number",
-    placeholder: "reps",
-    value: s.reps,
-    onChange: e => updateSet(block.id, ex.id, s.id, "reps", e.target.value),
-    style: {
-      width: 90,
-      fontFamily: monoFont
-    }
-  }), /*#__PURE__*/React.createElement("span", {
-    style: {
-      color: COLORS.textFaint,
-      fontSize: 12
-    }
-  }, "×")), /*#__PURE__*/React.createElement(Input, {
-    type: "number",
-    placeholder: "kg",
-    value: s.weight,
-    onChange: e => updateSet(block.id, ex.id, s.id, "weight", e.target.value),
-    style: {
-      width: 90,
-      fontFamily: monoFont
-    }
-  }), /*#__PURE__*/React.createElement("span", {
-    style: {
-      color: COLORS.textFaint,
-      fontSize: 11
-    }
-  }, "kg"), ex.sets.length > 1 && /*#__PURE__*/React.createElement("span", {
-    onClick: () => removeSet(block.id, ex.id, s.id),
-    style: {
-      color: COLORS.textFaint,
-      fontSize: 11,
-      cursor: "pointer",
-      marginLeft: 4
-    }
-  }, "verwijder"))), /*#__PURE__*/React.createElement("span", {
     onClick: () => addSet(block.id, ex.id),
     style: {
       color: COLORS.accent,
@@ -2095,10 +2364,11 @@ function TrainingTab({
     onClick: () => {
       resetForm();
       setShowForm(false);
+      setEditingSessionId(null);
     }
   }, "Annuleer"), /*#__PURE__*/React.createElement(Btn, {
     onClick: saveSession
-  }, "Sessie opslaan")))), /*#__PURE__*/React.createElement("div", {
+  }, editingSessionId ? "Wijzigingen opslaan" : "Sessie opslaan")))), /*#__PURE__*/React.createElement("div", {
     style: {
       display: "flex",
       flexDirection: "column",
@@ -2147,7 +2417,16 @@ function TrainingTab({
         fontSize: 12,
         color: COLORS.textMuted
       }
-    }, totalExercises, " oefening", totalExercises === 1 ? "" : "en")), /*#__PURE__*/React.createElement("span", {
+    }, totalExercises, " oefening", totalExercises === 1 ? "" : "en"), s.duoWith && /*#__PURE__*/React.createElement("span", {
+      style: {
+        fontSize: 10.5,
+        fontWeight: 700,
+        color: COLORS.accent,
+        border: `1px solid ${COLORS.accent}55`,
+        borderRadius: 4,
+        padding: "1px 7px"
+      }
+    }, "Duo met ", s.duoWith)), /*#__PURE__*/React.createElement("span", {
       style: {
         fontSize: 11,
         color: COLORS.textFaint
@@ -2223,9 +2502,18 @@ function TrainingTab({
         display: "flex",
         gap: 14,
         marginTop: 8,
-        alignItems: "center"
+        alignItems: "center",
+        flexWrap: "wrap"
       }
     }, /*#__PURE__*/React.createElement("span", {
+      onClick: () => editSession(s),
+      style: {
+        color: COLORS.accent,
+        fontSize: 12,
+        cursor: "pointer",
+        fontWeight: 600
+      }
+    }, "Bewerken"), /*#__PURE__*/React.createElement("span", {
       onClick: () => handleDownload(s),
       style: {
         color: COLORS.accent,
