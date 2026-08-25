@@ -1595,6 +1595,33 @@ function blockBadgeLabel(type) {
   return BLOCK_TYPES.find(b => b.id === type)?.label || "Los";
 }
 
+// converts a saved session's blocks into fresh, live-editable form blocks
+// (new ids, restores the duo B-fields as empty) — used both for editing a
+// past session and for pre-filling a new one from the last session.
+function sessionBlocksToFormBlocks(blocks) {
+  return (blocks || []).map(b => ({
+    id: uid(),
+    type: b.type,
+    exercises: (b.exercises || []).map(ex => ({
+      id: uid(),
+      name: ex.name,
+      mode: ex.mode || "reps",
+      durationUnit: ex.durationUnit || "sec",
+      notes: ex.notes || "",
+      sharedWith: "both",
+      sets: (ex.sets || []).map(st => ({
+        id: uid(),
+        reps: st.reps || "",
+        weight: st.weight || "",
+        duration: st.duration || "",
+        repsB: "",
+        weightB: "",
+        durationB: ""
+      }))
+    }))
+  }));
+}
+
 // ================= Training tab =================
 function TrainingTab({
   data,
@@ -1609,18 +1636,22 @@ function TrainingTab({
   const [expandedId, setExpandedId] = useState(null);
   const [copiedId, setCopiedId] = useState(null);
   const [editingSessionId, setEditingSessionId] = useState(null);
+  const [prefilledFrom, setPrefilledFrom] = useState(null);
   const [form, setForm] = useState({
     date: todayISO(),
     notes: "",
     blocks: [emptyBlock("single", 1)],
     partnerId: ""
   });
-  const resetForm = () => setForm({
-    date: todayISO(),
-    notes: "",
-    blocks: [emptyBlock("single", 1)],
-    partnerId: ""
-  });
+  const resetForm = () => {
+    setForm({
+      date: todayISO(),
+      notes: "",
+      blocks: [emptyBlock("single", 1)],
+      partnerId: ""
+    });
+    setPrefilledFrom(null);
+  };
   const partnerOptions = (clients || []).filter(c => c.id !== clientId);
   const partner = partnerOptions.find(c => c.id === form.partnerId) || null;
   const addBlock = (type, count) => setForm(f => ({
@@ -1866,27 +1897,7 @@ function TrainingTab({
       date: s.date,
       notes: s.notes || "",
       partnerId: "",
-      blocks: (s.blocks || []).map(b => ({
-        id: uid(),
-        type: b.type,
-        exercises: b.exercises.map(ex => ({
-          id: uid(),
-          name: ex.name,
-          mode: ex.mode || "reps",
-          durationUnit: ex.durationUnit || "sec",
-          notes: ex.notes || "",
-          sharedWith: "both",
-          sets: (ex.sets || []).map(st => ({
-            id: uid(),
-            reps: st.reps || "",
-            weight: st.weight || "",
-            duration: st.duration || "",
-            repsB: "",
-            weightB: "",
-            durationB: ""
-          }))
-        }))
-      }))
+      blocks: sessionBlocksToFormBlocks(s.blocks)
     });
     setEditingSessionId(s.id);
     setShowForm(true);
@@ -1958,7 +1969,21 @@ function TrainingTab({
   }, /*#__PURE__*/React.createElement(SectionTitle, {
     sub: `${sorted.length} sessie${sorted.length === 1 ? "" : "s"} gelogd`
   }, "Trainingssessies"), !showForm && /*#__PURE__*/React.createElement(Btn, {
-    onClick: () => setShowForm(true)
+    onClick: () => {
+      const mostRecent = [...data.sessions].sort((a, b) => a.date < b.date ? 1 : -1)[0];
+      if (mostRecent) {
+        setForm({
+          date: todayISO(),
+          notes: "",
+          partnerId: "",
+          blocks: sessionBlocksToFormBlocks(mostRecent.blocks)
+        });
+        setPrefilledFrom(mostRecent.date);
+      } else {
+        resetForm();
+      }
+      setShowForm(true);
+    }
   }, "+ Nieuwe sessie")), showForm && /*#__PURE__*/React.createElement("div", {
     style: {
       background: COLORS.surface,
@@ -1976,7 +2001,14 @@ function TrainingTab({
       textTransform: "uppercase",
       letterSpacing: "0.04em"
     }
-  }, "Sessie bewerken"), /*#__PURE__*/React.createElement("div", {
+  }, "Sessie bewerken"), !editingSessionId && prefilledFrom && /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 11.5,
+      color: COLORS.textMuted,
+      marginBottom: 10,
+      fontStyle: "italic"
+    }
+  }, "Vooringevuld vanaf de vorige sessie (", fmtDate(prefilledFrom), ") — pas aan waar nodig."), /*#__PURE__*/React.createElement("div", {
     style: {
       display: "flex",
       gap: 16,
