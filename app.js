@@ -1103,6 +1103,8 @@ function TrainingTracker() {
   const [importMsg, setImportMsg] = useState("");
   const [importOpen, setImportOpen] = useState(false);
   const [importText, setImportText] = useState("");
+  const [importConfirmPending, setImportConfirmPending] = useState(null);
+  const [importErrorMsg, setImportErrorMsg] = useState("");
   const importInputRef = useRef(null);
   useEffect(() => {
     (async () => {
@@ -1193,8 +1195,6 @@ function TrainingTracker() {
   };
   const applyImportedPayload = async payload => {
     if (!payload || !payload.clients) throw new Error("ongeldig bestand");
-    const ok = window.confirm("Dit overschrijft de data die nu hier zichtbaar is. Doorgaan?");
-    if (!ok) return;
     await saveClientsList(payload.clients);
     await saveLibraryState(payload.library || {
       hiddenIds: [],
@@ -1220,23 +1220,38 @@ function TrainingTracker() {
   const handleImportFile = e => {
     const file = e.target.files[0];
     if (!file) return;
+    setImportErrorMsg("");
     const reader = new FileReader();
-    reader.onload = async () => {
+    reader.onload = () => {
       try {
-        await applyImportedPayload(JSON.parse(reader.result));
+        const payload = JSON.parse(reader.result);
+        if (!payload || !payload.clients) throw new Error("ongeldig bestand");
+        setImportConfirmPending(payload);
       } catch (err) {
-        window.alert("Kon het bestand niet importeren. Is het een geldige back-up?");
+        setImportErrorMsg("Kon het bestand niet lezen. Is het een geldige back-up?");
       }
     };
     reader.readAsText(file);
   };
-  const handleImportPaste = async () => {
+  const handleImportPaste = () => {
+    setImportErrorMsg("");
     try {
-      await applyImportedPayload(JSON.parse(importText));
+      const payload = JSON.parse(importText);
+      if (!payload || !payload.clients) throw new Error("ongeldig bestand");
+      setImportConfirmPending(payload);
+    } catch (err) {
+      setImportErrorMsg("Kon de geplakte tekst niet lezen. Is het de volledige inhoud van een back-up-bestand?");
+    }
+  };
+  const confirmImport = async () => {
+    const payload = importConfirmPending;
+    setImportConfirmPending(null);
+    try {
+      await applyImportedPayload(payload);
       setImportText("");
       setImportOpen(false);
     } catch (err) {
-      window.alert("Kon de geplakte tekst niet importeren. Is het de volledige inhoud van een back-up-bestand?");
+      setImportErrorMsg("Kon de back-up niet importeren.");
     }
   };
   return /*#__PURE__*/React.createElement("div", {
@@ -1434,7 +1449,47 @@ function TrainingTracker() {
       width: "100%",
       marginTop: 6
     }
-  }, "Importeer geplakte tekst")), importMsg && /*#__PURE__*/React.createElement("div", {
+  }, "Importeer geplakte tekst"), importErrorMsg && /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 10.5,
+      color: COLORS.accent,
+      marginTop: 6
+    }
+  }, importErrorMsg), importConfirmPending && /*#__PURE__*/React.createElement("div", {
+    style: {
+      marginTop: 8,
+      background: COLORS.bg,
+      border: `1px solid ${COLORS.accent}55`,
+      borderRadius: 5,
+      padding: 8
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 10.5,
+      color: COLORS.text,
+      marginBottom: 6
+    }
+  }, "Bestand gelezen (", importConfirmPending.clients?.length || 0, " klant", (importConfirmPending.clients?.length || 0) === 1 ? "" : "en", "). Dit overschrijft de data die nu hier zichtbaar is. Doorgaan?"), /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "flex",
+      gap: 6
+    }
+  }, /*#__PURE__*/React.createElement(Btn, {
+    onClick: confirmImport,
+    style: {
+      flex: 1,
+      padding: "6px 8px",
+      fontSize: 11
+    }
+  }, "Ja, importeer"), /*#__PURE__*/React.createElement(Btn, {
+    variant: "ghost",
+    onClick: () => setImportConfirmPending(null),
+    style: {
+      flex: 1,
+      padding: "6px 8px",
+      fontSize: 11
+    }
+  }, "Annuleer")))), importMsg && /*#__PURE__*/React.createElement("div", {
     style: {
       fontSize: 11,
       color: COLORS.accent
@@ -1583,7 +1638,8 @@ function findLastUsage(sessions, name) {
         if (ex.name.trim().toLowerCase() === target && ex.sets.length > 0) {
           return {
             mode: ex.mode,
-            lastSet: ex.sets[ex.sets.length - 1]
+            lastSet: ex.sets[ex.sets.length - 1],
+            notes: ex.notes || ""
           };
         }
       }
@@ -1704,6 +1760,7 @@ function TrainingTab({
           return {
             ...ex,
             mode: usage.mode,
+            notes: usage.notes || ex.notes,
             sets: [firstSet, ...ex.sets.slice(1)]
           };
         })
