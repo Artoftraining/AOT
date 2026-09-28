@@ -7,7 +7,7 @@ const {
 } = React;
 window.storage = {
   async get(key) {
-    const raw = localStorage.getItem("aot_" + key);
+    const raw = localStorage.getItem('aot_' + key);
     if (raw === null) return null;
     return {
       key,
@@ -16,7 +16,7 @@ window.storage = {
     };
   },
   async set(key, value) {
-    localStorage.setItem("aot_" + key, value);
+    localStorage.setItem('aot_' + key, value);
     return {
       key,
       value,
@@ -24,7 +24,7 @@ window.storage = {
     };
   },
   async delete(key) {
-    localStorage.removeItem("aot_" + key);
+    localStorage.removeItem('aot_' + key);
     return {
       key,
       deleted: true,
@@ -32,7 +32,7 @@ window.storage = {
     };
   },
   async list(prefix) {
-    const keys = Object.keys(localStorage).filter(k => k.startsWith("aot_" + (prefix || ""))).map(k => k.slice(4));
+    const keys = Object.keys(localStorage).filter(k => k.startsWith('aot_' + (prefix || ''))).map(k => k.slice(4));
     return {
       keys,
       shared: false
@@ -301,6 +301,203 @@ const DEFAULT_LIBRARY = [
   groups: ["lower_back"]
 }];
 
+// ================= belangrijkste oefeningen (progressie) =================
+function normalizeExName(name) {
+  return (name || "").trim().toLowerCase().replace(/[-_]/g, " ").replace(/\s+/g, " ").trim();
+}
+
+// curated lijst van kernoefeningen die apart getoond worden in de Progressie-tab.
+// "track: reps" betekent dat herhalingen (niet gewicht) de voortgangsmaat zijn.
+const IMPORTANT_EXERCISES = [{
+  key: "bench_press",
+  label: "Bench Press",
+  aliases: ["bench press"],
+  track: "weight"
+}, {
+  key: "chest_press",
+  label: "Chest Press",
+  aliases: ["chest press"],
+  track: "weight"
+}, {
+  key: "deadlift",
+  label: "Deadlift",
+  aliases: ["deadlift"],
+  track: "weight"
+}, {
+  key: "hex_bar_deadlift",
+  label: "Hex Bar Deadlift",
+  aliases: ["hex bar deadlift", "hexbar deadlift", "trap bar deadlift"],
+  track: "weight"
+}, {
+  key: "cable_seated_row",
+  label: "Cable Seated Row",
+  aliases: ["cable seated row", "seated cable row"],
+  track: "weight"
+}, {
+  key: "back_squat",
+  label: "Back Squat",
+  aliases: ["back squat", "squat", "barbell squat", "barbell back squat"],
+  track: "weight"
+}, {
+  key: "goblet_squat",
+  label: "Goblet Squat",
+  aliases: ["goblet squat"],
+  track: "weight"
+}, {
+  key: "barbell_row",
+  label: "Barbell Row",
+  aliases: ["barbell row", "bent over row", "bentover row"],
+  track: "weight"
+}, {
+  key: "barbell_row_reverse",
+  label: "Barbell Row (reverse grip)",
+  aliases: ["barbell row reverse grip", "barbell row (reverse grip)", "reverse grip barbell row", "underhand barbell row", "underhand row"],
+  track: "weight"
+}, {
+  key: "lunges",
+  label: "Lunges",
+  aliases: ["lunges", "lunge", "walking lunges"],
+  track: "weight"
+}, {
+  key: "barbell_ohp",
+  label: "Barbell Overhead Press",
+  aliases: ["barbell overhead press", "military press", "barbell shoulder press"],
+  track: "weight"
+}, {
+  key: "ohp",
+  label: "Overhead Press",
+  aliases: ["overhead press", "ohp", "dumbbell overhead press", "shoulder press"],
+  track: "weight"
+}, {
+  key: "pull_ups",
+  label: "Pull Ups",
+  aliases: ["pull up", "pull ups", "pullup", "pullups"],
+  track: "reps",
+  assistTracking: true
+}, {
+  key: "chin_ups",
+  label: "Chin Ups",
+  aliases: ["chin up", "chin ups", "chinup", "chinups"],
+  track: "reps",
+  assistTracking: true
+}, {
+  key: "hip_thrusters",
+  label: "Hip Thrusters",
+  aliases: ["hip thrust", "hip thrusts", "hip thruster", "hip thrusters", "hip truster", "hip trusters"],
+  track: "weight"
+}, {
+  key: "push_ups",
+  label: "Push Ups",
+  aliases: ["push up", "push ups", "pushup", "pushups"],
+  track: "reps",
+  kneeVariant: true
+}];
+function matchImportantExercise(name) {
+  const n = normalizeExName(name);
+  if (!n) return null;
+  return IMPORTANT_EXERCISES.find(item => item.aliases.some(a => normalizeExName(a) === n)) || null;
+}
+
+// bepaalt de "variant-groep" van een gelogde oefening (assisted+rekker, of knie/normaal)
+// zodat niet-vergelijkbare uitvoeringen niet door elkaar in dezelfde grafieklijn belanden.
+function exerciseVariantKey(ex, match) {
+  const m = match !== undefined ? match : matchImportantExercise(ex.name);
+  if (!m) return "default";
+  if (m.assistTracking) {
+    return ex.assisted ? `assisted:${(ex.band || "").trim().toLowerCase() || "onbekend"}` : "unassisted";
+  }
+  if (m.kneeVariant) {
+    return ex.variant === "knee" ? "knee" : "normal";
+  }
+  return "default";
+}
+function exerciseVariantLabel(variantKey, match) {
+  if (!match || !variantKey) return "";
+  if (match.assistTracking) {
+    if (variantKey === "unassisted") return "Zonder assistentie";
+    const band = variantKey.split(":")[1];
+    return `Met assistentie${band && band !== "onbekend" ? ` (${band})` : ""}`;
+  }
+  if (match.kneeVariant) {
+    return variantKey === "knee" ? "Op de knieën" : "Normaal (op de tenen)";
+  }
+  return "";
+}
+function formatMetricValue(value, metric) {
+  if (metric === "time") return fmtDuration(value);
+  if (metric === "reps") return `${value} reps`;
+  return `${value} kg`;
+}
+
+// verzamelt per-sessie topwaarden voor een oefening, ofwel op exacte naam (matchName,
+// gebruikt voor "extra" oefeningen en de inline progressie-weergave), ofwel op de
+// canonieke sleutel van een belangrijkste oefening (matchKey, bundelt naamvarianten).
+function computeProgressionPoints(sessions, {
+  matchName,
+  matchKey,
+  variantKey
+} = {}) {
+  const targetName = matchName ? normalizeExName(matchName) : null;
+  const raw = [];
+  const sorted = [...sessions].sort((a, b) => a.date > b.date ? 1 : -1);
+  sorted.forEach(s => {
+    (s.blocks || []).forEach(block => {
+      (block.exercises || []).forEach(ex => {
+        let m = null;
+        if (matchKey) {
+          m = matchImportantExercise(ex.name);
+          if (!m || m.key !== matchKey) return;
+        } else if (targetName) {
+          if (normalizeExName(ex.name) !== targetName) return;
+          m = matchImportantExercise(ex.name);
+        } else {
+          return;
+        }
+        if (!ex.sets || ex.sets.length === 0) return;
+        const useReps = m ? m.track === "reps" : false;
+        const vKey = exerciseVariantKey(ex, m);
+        if (variantKey && vKey !== variantKey) return;
+        let value, kind;
+        if (useReps) {
+          value = Math.max(...ex.sets.map(st => Number(st.reps) || 0));
+          kind = "reps";
+        } else if (ex.mode === "time") {
+          value = Math.max(...ex.sets.map(st => Number(st.duration) || 0));
+          kind = "time";
+        } else {
+          value = Math.max(...ex.sets.map(st => Number(st.weight) || 0));
+          kind = "weight";
+        }
+        raw.push({
+          date: s.date,
+          label: fmtDate(s.date),
+          value,
+          kind,
+          variantKey: vKey
+        });
+      });
+    });
+  });
+  if (raw.length === 0) return {
+    points: [],
+    metric: "weight",
+    variants: []
+  };
+  const dominantKind = raw[raw.length - 1].kind;
+  const filtered = raw.filter(p => p.kind === dominantKind);
+  let runningMax = -Infinity;
+  filtered.forEach(p => {
+    p.isPR = p.value > runningMax;
+    if (p.isPR) runningMax = p.value;
+  });
+  const variants = Array.from(new Set(raw.map(p => p.variantKey)));
+  return {
+    points: filtered,
+    metric: dominantKind,
+    variants
+  };
+}
+
 // ================= storage helpers =================
 async function loadClientsList() {
   try {
@@ -327,7 +524,10 @@ function normalizeSession(s) {
           ...ex,
           mode: ex.mode || "reps",
           notes: ex.notes || "",
-          sets: ex.sets || []
+          sets: ex.sets || [],
+          assisted: ex.assisted || false,
+          band: ex.band || "",
+          variant: ex.variant || "normal"
         }))
       }))
     };
@@ -343,7 +543,10 @@ function normalizeSession(s) {
           ...ex,
           mode: ex.mode || "reps",
           notes: ex.notes || "",
-          sets: ex.sets || []
+          sets: ex.sets || [],
+          assisted: ex.assisted || false,
+          band: ex.band || "",
+          variant: ex.variant || "normal"
         }))
       }]
     };
@@ -586,87 +789,6 @@ function Segmented({
       }
     }, opt.label);
   }));
-}
-
-// ================= mini SVG line chart (no external chart lib needed) =================
-function MiniLineChart({
-  data,
-  formatY,
-  height = 240
-}) {
-  if (!data || data.length < 2) return null;
-  const W = 640,
-    H = height;
-  const pad = {
-    top: 14,
-    right: 18,
-    bottom: 32,
-    left: 50
-  };
-  const values = data.map(d => d.value);
-  let min = Math.min(...values),
-    max = Math.max(...values);
-  if (min === max) {
-    min -= 1;
-    max += 1;
-  }
-  const cushion = (max - min) * 0.12;
-  min -= cushion;
-  max += cushion;
-  const innerW = W - pad.left - pad.right;
-  const innerH = H - pad.top - pad.bottom;
-  const x = i => pad.left + (data.length === 1 ? innerW / 2 : i * innerW / (data.length - 1));
-  const y = v => pad.top + innerH - (v - min) / (max - min) * innerH;
-  const pathD = data.map((d, i) => `${i === 0 ? "M" : "L"} ${x(i).toFixed(1)} ${y(d.value).toFixed(1)}`).join(" ");
-  const gridN = 4;
-  const gridValues = Array.from({
-    length: gridN + 1
-  }, (_, i) => min + (max - min) * i / gridN);
-  const labelStep = data.length > 7 ? Math.ceil(data.length / 7) : 1;
-  return /*#__PURE__*/React.createElement("svg", {
-    viewBox: `0 0 ${W} ${H}`,
-    style: {
-      width: "100%",
-      height: "100%"
-    }
-  }, gridValues.map((gv, i) => /*#__PURE__*/React.createElement("g", {
-    key: i
-  }, /*#__PURE__*/React.createElement("line", {
-    x1: pad.left,
-    x2: W - pad.right,
-    y1: y(gv),
-    y2: y(gv),
-    stroke: COLORS.borderSoft,
-    strokeWidth: "1"
-  }), /*#__PURE__*/React.createElement("text", {
-    x: pad.left - 8,
-    y: y(gv) + 4,
-    textAnchor: "end",
-    fontSize: "10",
-    fill: COLORS.textFaint,
-    fontFamily: bodyFont
-  }, formatY(gv)))), data.map((d, i) => i % labelStep === 0 ? /*#__PURE__*/React.createElement("text", {
-    key: i,
-    x: x(i),
-    y: H - pad.bottom + 18,
-    textAnchor: "middle",
-    fontSize: "10",
-    fill: COLORS.textFaint,
-    fontFamily: bodyFont
-  }, d.label) : null), /*#__PURE__*/React.createElement("path", {
-    d: pathD,
-    fill: "none",
-    stroke: COLORS.accent,
-    strokeWidth: "2.5"
-  }), data.map((d, i) => /*#__PURE__*/React.createElement("circle", {
-    key: i,
-    cx: x(i),
-    cy: y(d.value),
-    r: d.isPR ? 6 : 3.5,
-    fill: d.isPR ? COLORS.white : COLORS.accent,
-    stroke: COLORS.accent,
-    strokeWidth: d.isPR ? 2 : 1
-  }, /*#__PURE__*/React.createElement("title", null, `${d.label}: ${formatY(d.value)}`))));
 }
 
 // ================= exercise combobox (library-aware) =================
@@ -1614,7 +1736,10 @@ function emptyExercise() {
     sets: [emptySet("reps")],
     notes: "",
     durationUnit: "sec",
-    sharedWith: "both"
+    sharedWith: "both",
+    assisted: false,
+    band: "",
+    variant: "normal"
   };
 }
 function emptyBlock(type = "single", exerciseCount = 1) {
@@ -1627,25 +1752,47 @@ function emptyBlock(type = "single", exerciseCount = 1) {
   };
 }
 
-// find most recent logged instance of an exercise name for this client
+// find most recent logged instance of an exercise name for this client — returns
+// ALL of its sets (not just the last one) so a new entry can be pre-filled in full.
 function findLastUsage(sessions, name) {
-  const target = name.trim().toLowerCase();
+  const target = normalizeExName(name);
   if (!target) return null;
   const sorted = [...sessions].sort((a, b) => a.date < b.date ? 1 : -1);
   for (const s of sorted) {
     for (const block of s.blocks || []) {
       for (const ex of block.exercises) {
-        if (ex.name.trim().toLowerCase() === target && ex.sets.length > 0) {
+        if (normalizeExName(ex.name) === target && ex.sets.length > 0) {
           return {
             mode: ex.mode,
-            lastSet: ex.sets[ex.sets.length - 1],
-            notes: ex.notes || ""
+            sets: ex.sets,
+            notes: ex.notes || "",
+            assisted: !!ex.assisted,
+            band: ex.band || "",
+            variant: ex.variant || "normal",
+            date: s.date
           };
         }
       }
     }
   }
   return null;
+}
+
+// converts previously-logged sets into fresh, editable form sets for a given mode
+function usageSetsToFormSets(sets, mode) {
+  return (sets || []).map(st => mode === "time" ? {
+    id: uid(),
+    duration: st.duration || "",
+    weight: st.weight || "",
+    durationB: "",
+    weightB: ""
+  } : {
+    id: uid(),
+    reps: st.reps || "",
+    weight: st.weight || "",
+    repsB: "",
+    weightB: ""
+  });
 }
 function blockBadgeLabel(type) {
   return BLOCK_TYPES.find(b => b.id === type)?.label || "Los";
@@ -1665,6 +1812,9 @@ function sessionBlocksToFormBlocks(blocks) {
       durationUnit: ex.durationUnit || "sec",
       notes: ex.notes || "",
       sharedWith: "both",
+      assisted: ex.assisted || false,
+      band: ex.band || "",
+      variant: ex.variant || "normal",
       sets: (ex.sets || []).map(st => ({
         id: uid(),
         reps: st.reps || "",
@@ -1693,12 +1843,17 @@ function TrainingTab({
   const [copiedId, setCopiedId] = useState(null);
   const [editingSessionId, setEditingSessionId] = useState(null);
   const [prefilledFrom, setPrefilledFrom] = useState(null);
+  const [progressOpenIds, setProgressOpenIds] = useState({});
   const [form, setForm] = useState({
     date: todayISO(),
     notes: "",
     blocks: [emptyBlock("single", 1)],
     partnerId: ""
   });
+  const toggleProgress = exId => setProgressOpenIds(p => ({
+    ...p,
+    [exId]: !p[exId]
+  }));
   const resetForm = () => {
     setForm({
       date: todayISO(),
@@ -1718,6 +1873,17 @@ function TrainingTab({
     ...f,
     blocks: f.blocks.filter(b => b.id !== blockId)
   }));
+  const moveBlock = (blockId, direction) => setForm(f => {
+    const idx = f.blocks.findIndex(b => b.id === blockId);
+    const target = idx + direction;
+    if (idx === -1 || target < 0 || target >= f.blocks.length) return f;
+    const blocks = [...f.blocks];
+    [blocks[idx], blocks[target]] = [blocks[target], blocks[idx]];
+    return {
+      ...f,
+      blocks
+    };
+  });
   const setBlockType = (blockId, type) => setForm(f => ({
     ...f,
     blocks: f.blocks.map(b => b.id === blockId ? {
@@ -1739,46 +1905,85 @@ function TrainingTab({
       exercises: b.exercises.filter(e => e.id !== exId)
     } : b).filter(b => b.exercises.length > 0)
   }));
+  const moveExerciseInBlock = (blockId, exId, direction) => setForm(f => ({
+    ...f,
+    blocks: f.blocks.map(b => {
+      if (b.id !== blockId) return b;
+      const idx = b.exercises.findIndex(e => e.id === exId);
+      const target = idx + direction;
+      if (idx === -1 || target < 0 || target >= b.exercises.length) return b;
+      const exercises = [...b.exercises];
+      [exercises[idx], exercises[target]] = [exercises[target], exercises[idx]];
+      return {
+        ...b,
+        exercises
+      };
+    })
+  }));
+
+  // called whenever an exercise's name changes (typed or picked from the library).
+  // If the (new) name matches a previously logged exercise, ALL of its sets, its
+  // mode, its notes and its assisted/band/knee-variant are pulled in. If not — e.g.
+  // the name was just changed to a different exercise that has no history yet —
+  // any notes carried over from the previous exercise in this row are cleared
+  // instead of lingering on the new, unrelated exercise.
   const applyAutofill = (blockId, exId, name) => {
     const usage = findLastUsage(data.sessions, name);
-    if (!usage) return;
     setForm(f => ({
       ...f,
       blocks: f.blocks.map(b => b.id === blockId ? {
         ...b,
         exercises: b.exercises.map(ex => {
           if (ex.id !== exId) return ex;
-          const firstSet = usage.mode === "time" ? {
-            ...ex.sets[0],
-            duration: usage.lastSet.duration || "",
-            weight: usage.lastSet.weight || ""
-          } : {
-            ...ex.sets[0],
-            reps: usage.lastSet.reps || "",
-            weight: usage.lastSet.weight || ""
+          if (!usage) return {
+            ...ex,
+            name,
+            notes: ""
           };
           return {
             ...ex,
+            name,
             mode: usage.mode,
-            notes: usage.notes || ex.notes,
-            sets: [firstSet, ...ex.sets.slice(1)]
+            notes: usage.notes || "",
+            assisted: usage.assisted,
+            band: usage.band,
+            variant: usage.variant,
+            sets: usageSetsToFormSets(usage.sets, usage.mode)
           };
         })
       } : b)
     }));
   };
-  const updateExerciseName = (blockId, exId, name) => {
-    setForm(f => ({
-      ...f,
-      blocks: f.blocks.map(b => b.id === blockId ? {
-        ...b,
-        exercises: b.exercises.map(ex => ex.id === exId ? {
-          ...ex,
-          name
-        } : ex)
-      } : b)
-    }));
-  };
+  const setExerciseAssisted = (blockId, exId, assisted) => setForm(f => ({
+    ...f,
+    blocks: f.blocks.map(b => b.id === blockId ? {
+      ...b,
+      exercises: b.exercises.map(ex => ex.id === exId ? {
+        ...ex,
+        assisted
+      } : ex)
+    } : b)
+  }));
+  const setExerciseBand = (blockId, exId, band) => setForm(f => ({
+    ...f,
+    blocks: f.blocks.map(b => b.id === blockId ? {
+      ...b,
+      exercises: b.exercises.map(ex => ex.id === exId ? {
+        ...ex,
+        band
+      } : ex)
+    } : b)
+  }));
+  const setExerciseVariant = (blockId, exId, variant) => setForm(f => ({
+    ...f,
+    blocks: f.blocks.map(b => b.id === blockId ? {
+      ...b,
+      exercises: b.exercises.map(ex => ex.id === exId ? {
+        ...ex,
+        variant
+      } : ex)
+    } : b)
+  }));
   const updateExerciseNotes = (blockId, exId, notes) => {
     setForm(f => ({
       ...f,
@@ -1887,6 +2092,9 @@ function TrainingTab({
         mode: ex.mode,
         durationUnit: ex.durationUnit || "sec",
         notes: (ex.notes || "").trim(),
+        assisted: !!ex.assisted,
+        band: (ex.band || "").trim(),
+        variant: ex.variant || "normal",
         sets
       };
     }).filter(ex => ex.sets.length > 0)
@@ -2152,20 +2360,47 @@ function TrainingTab({
       display: "flex",
       justifyContent: "space-between",
       alignItems: "center",
-      marginBottom: 12
+      marginBottom: 12,
+      flexWrap: "wrap",
+      gap: 8
     }
   }, /*#__PURE__*/React.createElement(Segmented, {
     options: BLOCK_TYPES,
     value: block.type,
     onChange: t => setBlockType(block.id, t)
-  }), form.blocks.length > 1 && /*#__PURE__*/React.createElement("span", {
+  }), /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "flex",
+      alignItems: "center",
+      gap: 10
+    }
+  }, form.blocks.length > 1 && /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "flex",
+      gap: 2
+    }
+  }, /*#__PURE__*/React.createElement("span", {
+    onClick: () => moveBlock(block.id, -1),
+    style: {
+      cursor: bIdx === 0 ? "default" : "pointer",
+      color: bIdx === 0 ? COLORS.borderSoft : COLORS.textFaint,
+      padding: "0 4px"
+    }
+  }, "▲"), /*#__PURE__*/React.createElement("span", {
+    onClick: () => moveBlock(block.id, 1),
+    style: {
+      cursor: bIdx === form.blocks.length - 1 ? "default" : "pointer",
+      color: bIdx === form.blocks.length - 1 ? COLORS.borderSoft : COLORS.textFaint,
+      padding: "0 4px"
+    }
+  }, "▼")), form.blocks.length > 1 && /*#__PURE__*/React.createElement("span", {
     onClick: () => removeBlock(block.id),
     style: {
       color: COLORS.accent,
       fontSize: 11.5,
       cursor: "pointer"
     }
-  }, "groep verwijderen")), block.exercises.map((ex, exIdx) => /*#__PURE__*/React.createElement("div", {
+  }, "groep verwijderen"))), block.exercises.map((ex, exIdx) => /*#__PURE__*/React.createElement("div", {
     key: ex.id,
     style: {
       background: COLORS.surface,
@@ -2181,14 +2416,35 @@ function TrainingTab({
       marginBottom: 10,
       alignItems: "center"
     }
-  }, /*#__PURE__*/React.createElement("div", {
+  }, block.exercises.length > 1 && /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "flex",
+      flexDirection: "column",
+      flexShrink: 0
+    }
+  }, /*#__PURE__*/React.createElement("span", {
+    onClick: () => moveExerciseInBlock(block.id, ex.id, -1),
+    style: {
+      cursor: exIdx === 0 ? "default" : "pointer",
+      color: exIdx === 0 ? COLORS.borderSoft : COLORS.textFaint,
+      fontSize: 11,
+      lineHeight: "12px"
+    }
+  }, "▲"), /*#__PURE__*/React.createElement("span", {
+    onClick: () => moveExerciseInBlock(block.id, ex.id, 1),
+    style: {
+      cursor: exIdx === block.exercises.length - 1 ? "default" : "pointer",
+      color: exIdx === block.exercises.length - 1 ? COLORS.borderSoft : COLORS.textFaint,
+      fontSize: 11,
+      lineHeight: "12px"
+    }
+  }, "▼")), /*#__PURE__*/React.createElement("div", {
     style: {
       flex: 1
     }
   }, /*#__PURE__*/React.createElement(ExerciseCombobox, {
     value: ex.name,
-    onChange: name => updateExerciseName(block.id, ex.id, name),
-    onPick: picked => applyAutofill(block.id, ex.id, picked.name),
+    onChange: name => applyAutofill(block.id, ex.id, name),
     library: library,
     onAddToLibrary: onAddToLibrary
   })), /*#__PURE__*/React.createElement(Segmented, {
@@ -2211,13 +2467,76 @@ function TrainingTab({
     }],
     value: ex.durationUnit || "sec",
     onChange: u => setExerciseDurationUnit(block.id, ex.id, u)
-  }), block.exercises.length > 1 && /*#__PURE__*/React.createElement(Btn, {
+  }), ex.name.trim() && /*#__PURE__*/React.createElement(Btn, {
+    variant: progressOpenIds[ex.id] ? "solid" : "subtle",
+    onClick: () => toggleProgress(ex.id),
+    style: {
+      padding: "8px 10px",
+      fontSize: 11.5
+    }
+  }, progressOpenIds[ex.id] ? "Verberg progressie" : "Progressie"), block.exercises.length > 1 && /*#__PURE__*/React.createElement(Btn, {
     variant: "danger",
     onClick: () => removeExerciseFromBlock(block.id, ex.id),
     style: {
       padding: "8px 10px"
     }
-  }, "Verwijder")), partner && /*#__PURE__*/React.createElement("div", {
+  }, "Verwijder")), progressOpenIds[ex.id] && ex.name.trim() && /*#__PURE__*/React.createElement("div", {
+    style: {
+      marginBottom: 10
+    }
+  }, /*#__PURE__*/React.createElement(InlineProgressPanel, {
+    sessions: data.sessions,
+    name: ex.name
+  })), (() => {
+    const match = matchImportantExercise(ex.name);
+    if (match?.assistTracking) {
+      return /*#__PURE__*/React.createElement("div", {
+        style: {
+          display: "flex",
+          gap: 10,
+          alignItems: "center",
+          marginBottom: 10,
+          flexWrap: "wrap"
+        }
+      }, /*#__PURE__*/React.createElement(Segmented, {
+        options: [{
+          id: "no",
+          label: "Zonder assistentie"
+        }, {
+          id: "yes",
+          label: "Met assistentie"
+        }],
+        value: ex.assisted ? "yes" : "no",
+        onChange: v => setExerciseAssisted(block.id, ex.id, v === "yes")
+      }), ex.assisted && /*#__PURE__*/React.createElement(Input, {
+        placeholder: "Welke rekker(s)? (bv. rood, groen+rood)",
+        value: ex.band || "",
+        onChange: e => setExerciseBand(block.id, ex.id, e.target.value),
+        style: {
+          width: 220,
+          fontSize: 12.5
+        }
+      }));
+    }
+    if (match?.kneeVariant) {
+      return /*#__PURE__*/React.createElement("div", {
+        style: {
+          marginBottom: 10
+        }
+      }, /*#__PURE__*/React.createElement(Segmented, {
+        options: [{
+          id: "normal",
+          label: "Normaal"
+        }, {
+          id: "knee",
+          label: "Op de knieën"
+        }],
+        value: ex.variant || "normal",
+        onChange: v => setExerciseVariant(block.id, ex.id, v)
+      }));
+    }
+    return null;
+  })(), partner && /*#__PURE__*/React.createElement("div", {
     style: {
       marginBottom: 10
     }
@@ -2630,72 +2949,253 @@ function TrainingTab({
 }
 
 // ================= Progressie tab =================
+// hand-rolled, dependency-free SVG line chart (no recharts in the standalone PWA)
+function MiniLineChart({
+  data,
+  formatY,
+  height = 240
+}) {
+  if (!data || data.length < 2) return null;
+  const W = 640,
+    H = height;
+  const pad = {
+    top: 14,
+    right: 18,
+    bottom: 32,
+    left: 50
+  };
+  const values = data.map(d => d.value);
+  let min = Math.min(...values),
+    max = Math.max(...values);
+  if (min === max) {
+    min -= 1;
+    max += 1;
+  }
+  const cushion = (max - min) * 0.12;
+  min -= cushion;
+  max += cushion;
+  const innerW = W - pad.left - pad.right;
+  const innerH = H - pad.top - pad.bottom;
+  const x = i => pad.left + (data.length === 1 ? innerW / 2 : i * innerW / (data.length - 1));
+  const y = v => pad.top + innerH - (v - min) / (max - min) * innerH;
+  const pathD = data.map((d, i) => `${i === 0 ? "M" : "L"} ${x(i).toFixed(1)} ${y(d.value).toFixed(1)}`).join(" ");
+  const gridN = 4;
+  const gridValues = Array.from({
+    length: gridN + 1
+  }, (_, i) => min + (max - min) * i / gridN);
+  const labelStep = data.length > 7 ? Math.ceil(data.length / 7) : 1;
+  return /*#__PURE__*/React.createElement("svg", {
+    viewBox: `0 0 ${W} ${H}`,
+    style: {
+      width: "100%",
+      height: "100%"
+    }
+  }, gridValues.map((gv, i) => /*#__PURE__*/React.createElement("g", {
+    key: i
+  }, /*#__PURE__*/React.createElement("line", {
+    x1: pad.left,
+    x2: W - pad.right,
+    y1: y(gv),
+    y2: y(gv),
+    stroke: COLORS.borderSoft,
+    strokeWidth: "1"
+  }), /*#__PURE__*/React.createElement("text", {
+    x: pad.left - 8,
+    y: y(gv) + 4,
+    textAnchor: "end",
+    fontSize: "10",
+    fill: COLORS.textFaint,
+    fontFamily: bodyFont
+  }, formatY(gv)))), data.map((d, i) => i % labelStep === 0 ? /*#__PURE__*/React.createElement("text", {
+    key: i,
+    x: x(i),
+    y: H - pad.bottom + 18,
+    textAnchor: "middle",
+    fontSize: "10",
+    fill: COLORS.textFaint,
+    fontFamily: bodyFont
+  }, d.label) : null), /*#__PURE__*/React.createElement("path", {
+    d: pathD,
+    fill: "none",
+    stroke: COLORS.accent,
+    strokeWidth: "2.5"
+  }), data.map((d, i) => /*#__PURE__*/React.createElement("circle", {
+    key: i,
+    cx: x(i),
+    cy: y(d.value),
+    r: d.isPR ? 6 : 3.5,
+    fill: d.isPR ? COLORS.white : COLORS.accent,
+    stroke: COLORS.accent,
+    strokeWidth: d.isPR ? 2 : 1
+  }, /*#__PURE__*/React.createElement("title", null, `${d.label}: ${formatY(d.value)}`))));
+}
+
+// shared small chart used both by the full Progressie tab and the inline
+// per-exercise progression panel in the training form.
+function ProgressChart({
+  points,
+  metric,
+  height = 300,
+  emptyLabel
+}) {
+  if (points.length < 2) {
+    return /*#__PURE__*/React.createElement("div", {
+      style: {
+        color: COLORS.textFaint,
+        fontSize: 12.5,
+        padding: "0 4px"
+      }
+    }, emptyLabel || "Nog te weinig datapunten. Log nog een sessie met deze oefening.");
+  }
+  return /*#__PURE__*/React.createElement(MiniLineChart, {
+    data: points,
+    formatY: v => metric === "time" ? fmtDuration(v) : metric === "reps" ? `${Math.round(v)}` : `${Math.round(v)}kg`,
+    height: height
+  });
+}
+function PrBadge({
+  value,
+  metric
+}) {
+  return /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontFamily: monoFont,
+      fontSize: 12,
+      color: COLORS.white,
+      background: COLORS.accent,
+      borderRadius: 6,
+      padding: "7px 12px",
+      fontWeight: 700,
+      whiteSpace: "nowrap"
+    }
+  }, "PR: ", formatMetricValue(value, metric));
+}
+
+// small progression view embedded directly in an exercise row of the training
+// form, so the coach can check history without leaving to the Progressie tab.
+function InlineProgressPanel({
+  sessions,
+  name
+}) {
+  const match = matchImportantExercise(name);
+  const [variantKey, setVariantKey] = useState(null);
+  const base = useMemo(() => computeProgressionPoints(sessions, {
+    matchName: name
+  }), [sessions, name]);
+  const variants = base.variants || [];
+  const effectiveVariant = variantKey && variants.includes(variantKey) ? variantKey : variants[variants.length - 1] || null;
+  const result = useMemo(() => {
+    if (variants.length <= 1) return base;
+    return computeProgressionPoints(sessions, {
+      matchName: name,
+      variantKey: effectiveVariant
+    });
+  }, [base, variants, effectiveVariant, sessions, name]);
+  const best = result.points.length ? Math.max(...result.points.map(p => p.value)) : null;
+  return /*#__PURE__*/React.createElement("div", {
+    style: {
+      background: COLORS.bg,
+      border: `1px solid ${COLORS.borderSoft}`,
+      borderRadius: 8,
+      padding: 12
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "flex",
+      justifyContent: "space-between",
+      alignItems: "center",
+      flexWrap: "wrap",
+      gap: 8,
+      marginBottom: variants.length > 1 ? 8 : 4
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 12,
+      fontWeight: 700,
+      color: COLORS.textMuted
+    }
+  }, "Progressie — ", name), best !== null && /*#__PURE__*/React.createElement(PrBadge, {
+    value: best,
+    metric: result.metric
+  })), variants.length > 1 && /*#__PURE__*/React.createElement("div", {
+    style: {
+      marginBottom: 8
+    }
+  }, /*#__PURE__*/React.createElement(Segmented, {
+    options: variants.map(v => ({
+      id: v,
+      label: exerciseVariantLabel(v, match) || v
+    })),
+    value: effectiveVariant,
+    onChange: setVariantKey
+  })), /*#__PURE__*/React.createElement(ProgressChart, {
+    points: result.points,
+    metric: result.metric,
+    height: 180,
+    emptyLabel: `Nog te weinig datapunten voor "${name}". Log nog een sessie met deze oefening.`
+  }));
+}
+const selectStyle = {
+  fontFamily: bodyFont,
+  fontSize: 13,
+  background: COLORS.bg,
+  color: COLORS.text,
+  border: `1px solid ${COLORS.border}`,
+  borderRadius: 5,
+  padding: "8px 10px",
+  width: "100%"
+};
 function ProgressieTab({
   data
 }) {
-  const exerciseNames = useMemo(() => {
+  const [section, setSection] = useState("important");
+  const [selectedImportant, setSelectedImportant] = useState(IMPORTANT_EXERCISES[0].key);
+  const [selectedExtra, setSelectedExtra] = useState("");
+  const [variantKey, setVariantKey] = useState(null);
+  const loggedNames = useMemo(() => {
     const set = new Set();
     data.sessions.forEach(s => (s.blocks || []).forEach(b => b.exercises.forEach(ex => ex.name && set.add(ex.name))));
-    return Array.from(set).sort();
+    return Array.from(set);
   }, [data.sessions]);
-  const [selected, setSelected] = useState(exerciseNames[0] || "");
+  const extraNames = useMemo(() => loggedNames.filter(n => !matchImportantExercise(n)).sort(), [loggedNames]);
+  const importantWithData = useMemo(() => {
+    const keys = new Set();
+    loggedNames.forEach(n => {
+      const m = matchImportantExercise(n);
+      if (m) keys.add(m.key);
+    });
+    return keys;
+  }, [loggedNames]);
   useEffect(() => {
-    if (!selected && exerciseNames.length) setSelected(exerciseNames[0]);
-    if (selected && !exerciseNames.includes(selected)) setSelected(exerciseNames[0] || "");
-  }, [exerciseNames]); // eslint-disable-line
+    if (!selectedExtra && extraNames.length) setSelectedExtra(extraNames[0]);
+    if (selectedExtra && !extraNames.includes(selectedExtra)) setSelectedExtra(extraNames[0] || "");
+  }, [extraNames]); // eslint-disable-line
 
-  const {
-    chartData,
-    metric
-  } = useMemo(() => {
-    if (!selected) return {
-      chartData: [],
-      metric: "weight"
-    };
-    const raw = [];
-    const sorted = [...data.sessions].sort((a, b) => a.date > b.date ? 1 : -1);
-    sorted.forEach(s => {
-      (s.blocks || []).forEach(b => {
-        b.exercises.forEach(ex => {
-          if (ex.name !== selected || ex.sets.length === 0) return;
-          if (ex.mode === "time") {
-            const topDuration = Math.max(...ex.sets.map(st => Number(st.duration) || 0));
-            raw.push({
-              date: s.date,
-              label: fmtDate(s.date),
-              value: topDuration,
-              mode: "time"
-            });
-          } else {
-            const topWeight = Math.max(...ex.sets.map(st => Number(st.weight) || 0));
-            raw.push({
-              date: s.date,
-              label: fmtDate(s.date),
-              value: topWeight,
-              mode: "reps"
-            });
-          }
-        });
-      });
+  useEffect(() => {
+    setVariantKey(null);
+  }, [section, selectedImportant, selectedExtra]);
+  const activeItem = IMPORTANT_EXERCISES.find(i => i.key === selectedImportant);
+  const matchForLabel = section === "important" ? activeItem : matchImportantExercise(selectedExtra);
+  const base = useMemo(() => section === "important" ? computeProgressionPoints(data.sessions, {
+    matchKey: selectedImportant
+  }) : computeProgressionPoints(data.sessions, {
+    matchName: selectedExtra
+  }), [data.sessions, section, selectedImportant, selectedExtra]);
+  const variants = base.variants || [];
+  const effectiveVariant = variantKey && variants.includes(variantKey) ? variantKey : variants[variants.length - 1] || null;
+  const result = useMemo(() => {
+    if (variants.length <= 1) return base;
+    return section === "important" ? computeProgressionPoints(data.sessions, {
+      matchKey: selectedImportant,
+      variantKey: effectiveVariant
+    }) : computeProgressionPoints(data.sessions, {
+      matchName: selectedExtra,
+      variantKey: effectiveVariant
     });
-    if (raw.length === 0) return {
-      chartData: [],
-      metric: "weight"
-    };
-    const dominantMode = raw[raw.length - 1].mode;
-    const filtered = raw.filter(p => p.mode === dominantMode);
-    let runningMax = -Infinity;
-    filtered.forEach(p => {
-      p.isPR = p.value > runningMax;
-      if (p.isPR) runningMax = p.value;
-    });
-    return {
-      chartData: filtered,
-      metric: dominantMode === "time" ? "time" : "weight"
-    };
-  }, [selected, data.sessions]);
-  const best = chartData.length ? Math.max(...chartData.map(p => p.value)) : null;
-  if (exerciseNames.length === 0) {
+  }, [base, variants, effectiveVariant, data.sessions, section, selectedImportant, selectedExtra]);
+  const best = result.points.length ? Math.max(...result.points.map(p => p.value)) : null;
+  const selectedLabel = section === "important" ? activeItem?.label : selectedExtra;
+  if (loggedNames.length === 0) {
     return /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement(SectionTitle, null, "Progressie"), /*#__PURE__*/React.createElement("div", {
       style: {
         color: COLORS.textFaint,
@@ -2707,42 +3207,80 @@ function ProgressieTab({
     sub: "Topwaarde per sessie, PR's gemarkeerd in wit"
   }, "Progressie"), /*#__PURE__*/React.createElement("div", {
     style: {
+      marginBottom: 18
+    }
+  }, /*#__PURE__*/React.createElement(Segmented, {
+    options: [{
+      id: "important",
+      label: "Belangrijkste"
+    }, {
+      id: "extra",
+      label: `Extra${extraNames.length ? ` (${extraNames.length})` : ""}`
+    }],
+    value: section,
+    onChange: setSection
+  })), section === "important" ? /*#__PURE__*/React.createElement("div", {
+    style: {
       display: "flex",
       gap: 10,
       alignItems: "center",
-      marginBottom: 20
+      marginBottom: 20,
+      flexWrap: "wrap"
     }
   }, /*#__PURE__*/React.createElement("div", {
     style: {
-      width: 240
+      width: 260
     }
   }, /*#__PURE__*/React.createElement("select", {
-    value: selected,
-    onChange: e => setSelected(e.target.value),
+    value: selectedImportant,
+    onChange: e => setSelectedImportant(e.target.value),
+    style: selectStyle
+  }, IMPORTANT_EXERCISES.map(item => /*#__PURE__*/React.createElement("option", {
+    key: item.key,
+    value: item.key
+  }, item.label, !importantWithData.has(item.key) ? " (nog geen data)" : "")))), best !== null && /*#__PURE__*/React.createElement(PrBadge, {
+    value: best,
+    metric: result.metric
+  })) : extraNames.length === 0 ? /*#__PURE__*/React.createElement("div", {
     style: {
-      fontFamily: bodyFont,
+      color: COLORS.textFaint,
       fontSize: 13,
-      background: COLORS.bg,
-      color: COLORS.text,
-      border: `1px solid ${COLORS.border}`,
-      borderRadius: 5,
-      padding: "8px 10px",
-      width: "100%"
+      marginBottom: 20
     }
-  }, exerciseNames.map(n => /*#__PURE__*/React.createElement("option", {
+  }, "Nog geen andere oefeningen gelogd buiten de belangrijkste lijst.") : /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "flex",
+      gap: 10,
+      alignItems: "center",
+      marginBottom: 20,
+      flexWrap: "wrap"
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      width: 260
+    }
+  }, /*#__PURE__*/React.createElement("select", {
+    value: selectedExtra,
+    onChange: e => setSelectedExtra(e.target.value),
+    style: selectStyle
+  }, extraNames.map(n => /*#__PURE__*/React.createElement("option", {
     key: n,
     value: n
-  }, n)))), best !== null && /*#__PURE__*/React.createElement("div", {
+  }, n)))), best !== null && /*#__PURE__*/React.createElement(PrBadge, {
+    value: best,
+    metric: result.metric
+  })), variants.length > 1 && (section !== "extra" || extraNames.length > 0) && /*#__PURE__*/React.createElement("div", {
     style: {
-      fontFamily: monoFont,
-      fontSize: 12,
-      color: COLORS.white,
-      background: COLORS.accent,
-      borderRadius: 6,
-      padding: "7px 12px",
-      fontWeight: 700
+      marginBottom: 16
     }
-  }, "PR: ", metric === "time" ? fmtDuration(best) : `${best} kg`)), /*#__PURE__*/React.createElement("div", {
+  }, /*#__PURE__*/React.createElement(Segmented, {
+    options: variants.map(v => ({
+      id: v,
+      label: exerciseVariantLabel(v, matchForLabel) || v
+    })),
+    value: effectiveVariant,
+    onChange: setVariantKey
+  })), (section === "important" || extraNames.length > 0) && /*#__PURE__*/React.createElement("div", {
     style: {
       background: COLORS.surface,
       border: `1px solid ${COLORS.border}`,
@@ -2750,16 +3288,11 @@ function ProgressieTab({
       padding: "18px 10px 8px",
       height: 320
     }
-  }, chartData.length < 2 ? /*#__PURE__*/React.createElement("div", {
-    style: {
-      color: COLORS.textFaint,
-      fontSize: 13,
-      padding: "0 14px"
-    }
-  }, "Nog te weinig datapunten voor \"", selected, "\". Log nog een sessie met deze oefening.") : /*#__PURE__*/React.createElement(MiniLineChart, {
-    data: chartData,
-    formatY: v => metric === "time" ? fmtDuration(v) : `${Math.round(v)}kg`,
-    height: 280
+  }, /*#__PURE__*/React.createElement(ProgressChart, {
+    points: result.points,
+    metric: result.metric,
+    height: 300,
+    emptyLabel: `Nog te weinig datapunten voor "${selectedLabel}". Log nog een sessie met deze oefening.`
   })));
 }
 
@@ -2894,11 +3427,62 @@ function MetingenTab({
       height: 240,
       marginBottom: 22
     }
-  }, /*#__PURE__*/React.createElement(MiniLineChart, {
+  }, /*#__PURE__*/React.createElement(ResponsiveContainer, {
+    width: "100%",
+    height: "100%"
+  }, /*#__PURE__*/React.createElement(LineChart, {
     data: weightChart,
-    formatY: v => `${Math.round(v)}kg`,
-    height: 200
-  })), /*#__PURE__*/React.createElement("div", {
+    margin: {
+      top: 5,
+      right: 20,
+      left: -10,
+      bottom: 5
+    }
+  }, /*#__PURE__*/React.createElement(CartesianGrid, {
+    stroke: COLORS.borderSoft,
+    vertical: false
+  }), /*#__PURE__*/React.createElement(XAxis, {
+    dataKey: "label",
+    stroke: COLORS.textFaint,
+    tick: {
+      fontSize: 11,
+      fill: COLORS.textFaint
+    },
+    tickLine: false,
+    axisLine: {
+      stroke: COLORS.borderSoft
+    }
+  }), /*#__PURE__*/React.createElement(YAxis, {
+    stroke: COLORS.textFaint,
+    tick: {
+      fontSize: 11,
+      fill: COLORS.textFaint
+    },
+    tickLine: false,
+    axisLine: false,
+    width: 40,
+    domain: ["dataMin - 2", "dataMax + 2"]
+  }), /*#__PURE__*/React.createElement(Tooltip, {
+    contentStyle: {
+      background: COLORS.surfaceRaised,
+      border: `1px solid ${COLORS.border}`,
+      borderRadius: 6,
+      fontSize: 12
+    },
+    labelStyle: {
+      color: COLORS.text
+    },
+    formatter: value => [`${value} kg`, "Gewicht"]
+  }), /*#__PURE__*/React.createElement(Line, {
+    type: "monotone",
+    dataKey: "value",
+    stroke: COLORS.accent,
+    strokeWidth: 2,
+    dot: {
+      r: 3,
+      fill: COLORS.accent
+    }
+  })))), /*#__PURE__*/React.createElement("div", {
     style: {
       display: "flex",
       flexDirection: "column",
@@ -3053,4 +3637,4 @@ function MetingenTab({
   }, "verwijder")))));
 }
 const root = ReactDOM.createRoot(document.getElementById("root"));
-root.render(/*#__PURE__*/React.createElement(TrainingTracker, null));
+root.render(React.createElement(TrainingTracker, null));
