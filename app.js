@@ -7,7 +7,7 @@ const {
 } = React;
 window.storage = {
   async get(key) {
-    const raw = localStorage.getItem('aot_' + key);
+    const raw = localStorage.getItem("aot_" + key);
     if (raw === null) return null;
     return {
       key,
@@ -16,7 +16,7 @@ window.storage = {
     };
   },
   async set(key, value) {
-    localStorage.setItem('aot_' + key, value);
+    localStorage.setItem("aot_" + key, value);
     return {
       key,
       value,
@@ -24,7 +24,7 @@ window.storage = {
     };
   },
   async delete(key) {
-    localStorage.removeItem('aot_' + key);
+    localStorage.removeItem("aot_" + key);
     return {
       key,
       deleted: true,
@@ -32,7 +32,7 @@ window.storage = {
     };
   },
   async list(prefix) {
-    const keys = Object.keys(localStorage).filter(k => k.startsWith('aot_' + (prefix || ''))).map(k => k.slice(4));
+    const keys = Object.keys(localStorage).filter(k => k.startsWith("aot_" + (prefix || ""))).map(k => k.slice(4));
     return {
       keys,
       shared: false
@@ -1828,6 +1828,119 @@ function sessionBlocksToFormBlocks(blocks) {
   }));
 }
 
+// finds the partner's own copy of a duo session. Sessions created going forward
+// carry a shared duoGroupId on both copies; older duo sessions (saved before that
+// existed) are matched on a best-effort basis via date + names.
+function findDuoPartnerSession(partnerSessions, ownSession, ownClientName) {
+  if (!partnerSessions || !ownSession) return null;
+  if (ownSession.duoGroupId) {
+    const byGroup = partnerSessions.find(ps => ps.duoGroupId === ownSession.duoGroupId);
+    if (byGroup) return byGroup;
+  }
+  return partnerSessions.find(ps => ps.duoWith === ownClientName && ps.date === ownSession.date) || null;
+}
+
+// rebuilds editable form blocks for a duo session from BOTH copies at once, so
+// editing shows (and lets you adjust) both clients' numbers side by side again.
+// Exercises are matched by name — first within the same block position, then
+// anywhere else — since "both do the same exercise" is the common case; any
+// exercise that only exists on one side becomes an only-primary/only-partner row.
+function mergeDuoBlocksForEdit(primaryBlocks, partnerBlocks) {
+  const partnerPool = (partnerBlocks || []).map((b, bi) => ({
+    bi,
+    exercises: (b.exercises || []).map(ex => ({
+      ex,
+      used: false
+    }))
+  }));
+  const takePartnerExercise = (blockIdx, name) => {
+    const target = normalizeExName(name);
+    const sameBlock = partnerPool[blockIdx];
+    if (sameBlock) {
+      const hit = sameBlock.exercises.find(e => !e.used && normalizeExName(e.ex.name) === target);
+      if (hit) {
+        hit.used = true;
+        return hit.ex;
+      }
+    }
+    for (const pb of partnerPool) {
+      const hit = pb.exercises.find(e => !e.used && normalizeExName(e.ex.name) === target);
+      if (hit) {
+        hit.used = true;
+        return hit.ex;
+      }
+    }
+    return null;
+  };
+  const mergedBlocks = (primaryBlocks || []).map((b, bi) => ({
+    id: uid(),
+    type: b.type,
+    exercises: (b.exercises || []).map(ex => {
+      const partnerEx = takePartnerExercise(bi, ex.name);
+      const mode = ex.mode || "reps";
+      const maxSets = Math.max((ex.sets || []).length, (partnerEx?.sets || []).length, 1);
+      const sets = Array.from({
+        length: maxSets
+      }, (_, i) => {
+        const own = (ex.sets || [])[i] || {};
+        const theirs = (partnerEx?.sets || [])[i] || {};
+        return {
+          id: uid(),
+          reps: own.reps || "",
+          weight: own.weight || "",
+          duration: own.duration || "",
+          repsB: theirs.reps || "",
+          weightB: theirs.weight || "",
+          durationB: theirs.duration || ""
+        };
+      });
+      return {
+        id: uid(),
+        name: ex.name,
+        mode,
+        durationUnit: ex.durationUnit || "sec",
+        notes: ex.notes || "",
+        sharedWith: partnerEx ? "both" : "onlyPrimary",
+        assisted: ex.assisted || false,
+        band: ex.band || "",
+        variant: ex.variant || "normal",
+        sets
+      };
+    })
+  }));
+
+  // leftover partner exercises that have no match on the primary side at all
+  const leftovers = [];
+  partnerPool.forEach(pb => pb.exercises.forEach(e => !e.used && leftovers.push(e.ex)));
+  if (leftovers.length > 0) {
+    mergedBlocks.push({
+      id: uid(),
+      type: "single",
+      exercises: leftovers.map(ex => ({
+        id: uid(),
+        name: ex.name,
+        mode: ex.mode || "reps",
+        durationUnit: ex.durationUnit || "sec",
+        notes: ex.notes || "",
+        sharedWith: "onlyPartner",
+        assisted: ex.assisted || false,
+        band: ex.band || "",
+        variant: ex.variant || "normal",
+        sets: (ex.sets || []).map(st => ({
+          id: uid(),
+          reps: "",
+          weight: "",
+          duration: "",
+          repsB: st.reps || "",
+          weightB: st.weight || "",
+          durationB: st.duration || ""
+        }))
+      }))
+    });
+  }
+  return mergedBlocks;
+}
+
 // ================= Training tab =================
 function TrainingTab({
   data,
@@ -1841,6 +1954,7 @@ function TrainingTab({
   const [showForm, setShowForm] = useState(false);
   const [expandedId, setExpandedId] = useState(null);
   const [copiedId, setCopiedId] = useState(null);
+  const [duoPreviewCache, setDuoPreviewCache] = useState({});
   const [editingSessionId, setEditingSessionId] = useState(null);
   const [prefilledFrom, setPrefilledFrom] = useState(null);
   const [progressOpenIds, setProgressOpenIds] = useState({});
@@ -1865,6 +1979,35 @@ function TrainingTab({
   };
   const partnerOptions = (clients || []).filter(c => c.id !== clientId);
   const partner = partnerOptions.find(c => c.id === form.partnerId) || null;
+
+  // when a duo session is expanded in the read-only list, fetch the partner's
+  // own copy once so both sides can be shown together instead of just this client's.
+  useEffect(() => {
+    if (!expandedId) return;
+    const s = data.sessions.find(x => x.id === expandedId);
+    if (!s || !s.duoWith || duoPreviewCache[expandedId] !== undefined) return;
+    const partnerClient = (clients || []).find(c => c.name === s.duoWith);
+    if (!partnerClient) {
+      setDuoPreviewCache(c => ({
+        ...c,
+        [expandedId]: null
+      }));
+      return;
+    }
+    let cancelled = false;
+    loadClientData(partnerClient.id).then(partnerData => {
+      if (cancelled) return;
+      const partnerSession = findDuoPartnerSession(partnerData.sessions, s, clientName);
+      setDuoPreviewCache(c => ({
+        ...c,
+        [expandedId]: partnerSession || null
+      }));
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [expandedId, data.sessions, clients, clientName]); // eslint-disable-line
+
   const addBlock = (type, count) => setForm(f => ({
     ...f,
     blocks: [...f.blocks, emptyBlock(type, count)]
@@ -2105,12 +2248,18 @@ function TrainingTab({
       const primaryBlocks = buildBlocksForPerspective("primary");
       const partnerBlocks = buildBlocksForPerspective("partner");
       if (primaryBlocks.length === 0 && partnerBlocks.length === 0) return;
+
+      // a duo session keeps the same duoGroupId across both clients' own copies for
+      // its whole life, so the two copies can always be found and edited together —
+      // even a legacy session (saved before this existed) gets one backfilled here.
+      const duoGroupId = originalSession && originalSession.duoGroupId || uid();
       const primarySession = {
         id: editingSessionId || uid(),
         date: form.date,
         notes: form.notes.trim(),
         blocks: primaryBlocks,
-        duoWith: partner.name
+        duoWith: partner.name,
+        duoGroupId
       };
       const sessions = editingSessionId ? data.sessions.map(s => s.id === editingSessionId ? primarySession : s) : [primarySession, ...data.sessions].sort((a, b) => a.date < b.date ? 1 : -1);
       persist({
@@ -2118,18 +2267,28 @@ function TrainingTab({
         sessions
       });
 
-      // only create the partner's own copy for brand-new duo sessions —
-      // editing an existing session only touches the client you're currently viewing.
-      if (!editingSessionId && partnerBlocks.length > 0) {
+      // keep the partner's own copy in sync too — both when this is a brand-new
+      // duo session and when an existing one (found via duoGroupId, or by date for
+      // older sessions) is being edited from either side.
+      const partnerData = await loadClientData(partner.id);
+      const existingPartnerSession = editingSessionId ? findDuoPartnerSession(partnerData.sessions, originalSession, clientName) : null;
+      if (partnerBlocks.length > 0) {
         const partnerSession = {
-          id: uid(),
+          id: existingPartnerSession ? existingPartnerSession.id : uid(),
           date: form.date,
           notes: form.notes.trim(),
           blocks: partnerBlocks,
-          duoWith: clientName
+          duoWith: clientName,
+          duoGroupId
         };
-        const partnerData = await loadClientData(partner.id);
-        const partnerSessions = [partnerSession, ...partnerData.sessions].sort((a, b) => a.date < b.date ? 1 : -1);
+        const partnerSessions = existingPartnerSession ? partnerData.sessions.map(ps => ps.id === existingPartnerSession.id ? partnerSession : ps) : [partnerSession, ...partnerData.sessions].sort((a, b) => a.date < b.date ? 1 : -1);
+        await saveClientData(partner.id, {
+          ...partnerData,
+          sessions: partnerSessions
+        });
+      } else if (existingPartnerSession) {
+        // every partner-specific exercise was removed during this edit — drop their copy too
+        const partnerSessions = partnerData.sessions.filter(ps => ps.id !== existingPartnerSession.id);
         await saveClientData(partner.id, {
           ...partnerData,
           sessions: partnerSessions
@@ -2145,6 +2304,9 @@ function TrainingTab({
         blocks: cleanBlocks,
         ...(originalSession && originalSession.duoWith ? {
           duoWith: originalSession.duoWith
+        } : {}),
+        ...(originalSession && originalSession.duoGroupId ? {
+          duoGroupId: originalSession.duoGroupId
         } : {})
       };
       const sessions = editingSessionId ? data.sessions.map(s => s.id === editingSessionId ? session : s) : [session, ...data.sessions].sort((a, b) => a.date < b.date ? 1 : -1);
@@ -2157,12 +2319,29 @@ function TrainingTab({
     setShowForm(false);
     setEditingSessionId(null);
   };
-  const editSession = s => {
+
+  // reopens a saved session for editing. For a duo session, it also fetches the
+  // partner's own copy and merges both sides back into one editable dual-column
+  // form (same view as when the session was first built together).
+  const editSession = async s => {
+    let partnerId = "";
+    let mergedBlocks = sessionBlocksToFormBlocks(s.blocks);
+    if (s.duoWith) {
+      const partnerClient = (clients || []).find(c => c.name === s.duoWith);
+      if (partnerClient) {
+        const partnerData = await loadClientData(partnerClient.id);
+        const partnerSession = findDuoPartnerSession(partnerData.sessions, s, clientName);
+        if (partnerSession) {
+          partnerId = partnerClient.id;
+          mergedBlocks = mergeDuoBlocksForEdit(s.blocks, partnerSession.blocks);
+        }
+      }
+    }
     setForm({
       date: s.date,
       notes: s.notes || "",
-      partnerId: "",
-      blocks: sessionBlocksToFormBlocks(s.blocks)
+      partnerId,
+      blocks: mergedBlocks
     });
     setEditingSessionId(s.id);
     setShowForm(true);
@@ -2839,112 +3018,159 @@ function TrainingTab({
         fontSize: 11,
         color: COLORS.textFaint
       }
-    }, open ? "▲" : "▼")), open && /*#__PURE__*/React.createElement("div", {
-      style: {
-        padding: "10px 14px 16px",
-        background: COLORS.bg
-      }
-    }, s.notes && /*#__PURE__*/React.createElement("div", {
-      style: {
-        fontSize: 12,
-        color: COLORS.textMuted,
-        marginBottom: 10,
-        fontStyle: "italic"
-      }
-    }, s.notes), (s.blocks || []).map(b => /*#__PURE__*/React.createElement("div", {
-      key: b.id,
-      style: {
-        marginBottom: 12
-      }
-    }, b.type !== "single" && /*#__PURE__*/React.createElement("div", {
-      style: {
-        display: "inline-block",
-        background: COLORS.accent,
-        color: COLORS.white,
-        fontSize: 10.5,
-        fontWeight: 700,
-        letterSpacing: "0.05em",
-        textTransform: "uppercase",
-        padding: "3px 8px",
-        borderRadius: 4,
-        marginBottom: 6
-      }
-    }, blockBadgeLabel(b.type)), b.exercises.map(ex => /*#__PURE__*/React.createElement("div", {
-      key: ex.id,
-      style: {
-        marginBottom: 8
-      }
-    }, /*#__PURE__*/React.createElement("div", {
-      style: {
-        fontSize: 13,
-        fontWeight: 700,
-        color: COLORS.text,
-        marginBottom: 4
-      }
-    }, ex.name), /*#__PURE__*/React.createElement("div", {
-      style: {
-        display: "flex",
-        flexWrap: "wrap",
-        gap: 6
-      }
-    }, ex.sets.map(set => /*#__PURE__*/React.createElement("span", {
-      key: set.id,
-      style: {
-        fontFamily: monoFont,
-        fontSize: 12,
-        background: COLORS.surfaceRaised,
-        border: `1px solid ${COLORS.border}`,
-        borderRadius: 4,
-        padding: "3px 8px",
-        color: COLORS.textMuted
-      }
-    }, ex.mode === "time" ? `${fmtDuration(set.duration)}${set.weight ? ` · ${set.weight}kg` : ""}` : `${set.reps}×${set.weight || 0}kg`))), ex.notes && /*#__PURE__*/React.createElement("div", {
-      style: {
-        fontSize: 11.5,
-        color: COLORS.textMuted,
-        fontStyle: "italic",
-        marginTop: 4
-      }
-    }, ex.notes))))), /*#__PURE__*/React.createElement("div", {
-      style: {
-        display: "flex",
-        gap: 14,
-        marginTop: 8,
-        alignItems: "center",
-        flexWrap: "wrap"
-      }
-    }, /*#__PURE__*/React.createElement("span", {
-      onClick: () => editSession(s),
-      style: {
-        color: COLORS.accent,
-        fontSize: 12,
-        cursor: "pointer",
-        fontWeight: 600
-      }
-    }, "Bewerken"), /*#__PURE__*/React.createElement("span", {
-      onClick: () => handleDownload(s),
-      style: {
-        color: COLORS.accent,
-        fontSize: 12,
-        cursor: "pointer",
-        fontWeight: 600
-      }
-    }, "Download voor klant"), /*#__PURE__*/React.createElement("span", {
-      onClick: () => handleCopy(s),
-      style: {
-        color: COLORS.accent,
-        fontSize: 12,
-        cursor: "pointer",
-        fontWeight: 600
-      }
-    }, copiedId === s.id ? "Gekopieerd ✓" : "Kopieer als bericht"), /*#__PURE__*/React.createElement("span", {
-      onClick: () => deleteSession(s.id),
-      style: {
-        color: COLORS.textFaint,
-        fontSize: 12,
-        cursor: "pointer"
-      }
-    }, "verwijderen"))));
+    }, open ? "▲" : "▼")), open && (() => {
+      const partnerPreview = s.duoWith ? duoPreviewCache[s.id] : undefined;
+      const showDuo = !!(s.duoWith && partnerPreview);
+      const displayBlocks = showDuo ? mergeDuoBlocksForEdit(s.blocks, partnerPreview.blocks) : s.blocks || [];
+      const chip = (label, set, ex) => /*#__PURE__*/React.createElement("span", {
+        style: {
+          fontFamily: monoFont,
+          fontSize: 12,
+          background: COLORS.surfaceRaised,
+          border: `1px solid ${COLORS.border}`,
+          borderRadius: 4,
+          padding: "3px 8px",
+          color: COLORS.textMuted
+        }
+      }, label ? `${label}: ` : "", ex.mode === "time" ? `${fmtDuration(set.duration)}${set.weight ? ` · ${set.weight}kg` : ""}` : `${set.reps}×${set.weight || 0}kg`);
+      return /*#__PURE__*/React.createElement("div", {
+        style: {
+          padding: "10px 14px 16px",
+          background: COLORS.bg
+        }
+      }, s.notes && /*#__PURE__*/React.createElement("div", {
+        style: {
+          fontSize: 12,
+          color: COLORS.textMuted,
+          marginBottom: 10,
+          fontStyle: "italic"
+        }
+      }, s.notes), s.duoWith && !showDuo && /*#__PURE__*/React.createElement("div", {
+        style: {
+          fontSize: 11.5,
+          color: COLORS.textFaint,
+          fontStyle: "italic",
+          marginBottom: 10
+        }
+      }, partnerPreview === null ? `Kan de voorbereiding van ${s.duoWith} niet terugvinden — enkel jouw kant wordt getoond.` : "Bezig met laden van de kant van " + s.duoWith + "…"), displayBlocks.map(b => /*#__PURE__*/React.createElement("div", {
+        key: b.id,
+        style: {
+          marginBottom: 12
+        }
+      }, b.type !== "single" && /*#__PURE__*/React.createElement("div", {
+        style: {
+          display: "inline-block",
+          background: COLORS.accent,
+          color: COLORS.white,
+          fontSize: 10.5,
+          fontWeight: 700,
+          letterSpacing: "0.05em",
+          textTransform: "uppercase",
+          padding: "3px 8px",
+          borderRadius: 4,
+          marginBottom: 6
+        }
+      }, blockBadgeLabel(b.type)), b.exercises.map(ex => /*#__PURE__*/React.createElement("div", {
+        key: ex.id,
+        style: {
+          marginBottom: 8
+        }
+      }, /*#__PURE__*/React.createElement("div", {
+        style: {
+          fontSize: 13,
+          fontWeight: 700,
+          color: COLORS.text,
+          marginBottom: 4
+        }
+      }, ex.name, showDuo && ex.sharedWith === "onlyPrimary" && /*#__PURE__*/React.createElement("span", {
+        style: {
+          fontSize: 10.5,
+          fontWeight: 400,
+          color: COLORS.textFaint
+        }
+      }, " — enkel ", clientName), showDuo && ex.sharedWith === "onlyPartner" && /*#__PURE__*/React.createElement("span", {
+        style: {
+          fontSize: 10.5,
+          fontWeight: 400,
+          color: COLORS.textFaint
+        }
+      }, " — enkel ", s.duoWith)), showDuo && ex.sharedWith !== "onlyPartner" && /*#__PURE__*/React.createElement("div", {
+        style: {
+          display: "flex",
+          flexWrap: "wrap",
+          gap: 6,
+          marginBottom: ex.sharedWith === "both" ? 4 : 0
+        }
+      }, ex.sets.map(set => /*#__PURE__*/React.createElement(React.Fragment, {
+        key: set.id
+      }, chip(showDuo ? clientName : null, set, ex)))), showDuo && ex.sharedWith !== "onlyPrimary" && /*#__PURE__*/React.createElement("div", {
+        style: {
+          display: "flex",
+          flexWrap: "wrap",
+          gap: 6
+        }
+      }, ex.sets.map(set => /*#__PURE__*/React.createElement(React.Fragment, {
+        key: set.id
+      }, chip(s.duoWith, {
+        reps: set.repsB,
+        weight: set.weightB,
+        duration: set.durationB
+      }, ex)))), !showDuo && /*#__PURE__*/React.createElement("div", {
+        style: {
+          display: "flex",
+          flexWrap: "wrap",
+          gap: 6
+        }
+      }, ex.sets.map(set => /*#__PURE__*/React.createElement(React.Fragment, {
+        key: set.id
+      }, chip(null, set, ex)))), ex.notes && /*#__PURE__*/React.createElement("div", {
+        style: {
+          fontSize: 11.5,
+          color: COLORS.textMuted,
+          fontStyle: "italic",
+          marginTop: 4
+        }
+      }, ex.notes))))), /*#__PURE__*/React.createElement("div", {
+        style: {
+          display: "flex",
+          gap: 14,
+          marginTop: 8,
+          alignItems: "center",
+          flexWrap: "wrap"
+        }
+      }, /*#__PURE__*/React.createElement("span", {
+        onClick: () => editSession(s),
+        style: {
+          color: COLORS.accent,
+          fontSize: 12,
+          cursor: "pointer",
+          fontWeight: 600
+        }
+      }, "Bewerken"), /*#__PURE__*/React.createElement("span", {
+        onClick: () => handleDownload(s),
+        style: {
+          color: COLORS.accent,
+          fontSize: 12,
+          cursor: "pointer",
+          fontWeight: 600
+        }
+      }, "Download voor klant"), /*#__PURE__*/React.createElement("span", {
+        onClick: () => handleCopy(s),
+        style: {
+          color: COLORS.accent,
+          fontSize: 12,
+          cursor: "pointer",
+          fontWeight: 600
+        }
+      }, copiedId === s.id ? "Gekopieerd ✓" : "Kopieer als bericht"), /*#__PURE__*/React.createElement("span", {
+        onClick: () => deleteSession(s.id),
+        style: {
+          color: COLORS.textFaint,
+          fontSize: 12,
+          cursor: "pointer"
+        }
+      }, "verwijderen")));
+    })());
   })));
 }
 
