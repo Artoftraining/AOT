@@ -98,6 +98,32 @@ const MUSCLE_GROUPS = [{
 }];
 const groupLabel = id => MUSCLE_GROUPS.find(g => g.id === id)?.label || id;
 const groupShort = id => MUSCLE_GROUPS.find(g => g.id === id)?.short || id;
+
+// een training bestaat uit drie delen; elk blok hoort bij precies één deel
+const SECTIONS = [{
+  id: "warmup",
+  label: "Opwarming"
+}, {
+  id: "main",
+  label: "Kern"
+}, {
+  id: "cooldown",
+  label: "Cooling down / stretching"
+}];
+const sectionOf = b => SECTIONS.some(s => s.id === b.section) ? b.section : "main";
+const sectionIndex = id => Math.max(0, SECTIONS.findIndex(s => s.id === id));
+// stable sort: warm-up first, then core, then cool-down; order inside a section is kept
+const sortBySection = blocks => blocks.map((b, i) => ({
+  b,
+  i
+})).sort((x, y) => sectionIndex(sectionOf(x.b)) - sectionIndex(sectionOf(y.b)) || x.i - y.i).map(x => x.b);
+// groups blocks per section (only non-empty ones); old sessions end up entirely in "Kern"
+const groupBlocksBySection = blocks => SECTIONS.map(sec => ({
+  section: sec,
+  blocks: (blocks || []).filter(b => sectionOf(b) === sec.id)
+})).filter(g => g.blocks.length > 0);
+// section headings are only shown when a session actually uses more than just "Kern"
+const showSectionHeadings = groups => groups.length > 1 || groups[0] && groups[0].section.id !== "main";
 const BLOCK_TYPES = [{
   id: "single",
   label: "Los"
@@ -520,6 +546,7 @@ function normalizeSession(s) {
       ...s,
       blocks: s.blocks.map(b => ({
         ...b,
+        section: sectionOf(b),
         exercises: (b.exercises || []).map(ex => ({
           ...ex,
           mode: ex.mode || "reps",
@@ -539,6 +566,7 @@ function normalizeSession(s) {
       blocks: [{
         id: uid(),
         type: "single",
+        section: "main",
         exercises: s.exercises.map(ex => ({
           ...ex,
           mode: ex.mode || "reps",
@@ -561,16 +589,19 @@ async function loadClientData(id) {
     const res = await window.storage.get(`client-data:${id}`, false);
     const data = res ? JSON.parse(res.value) : {
       sessions: [],
-      measurements: []
+      measurements: [],
+      intakes: []
     };
     return {
       sessions: (data.sessions || []).map(normalizeSession),
-      measurements: data.measurements || []
+      measurements: data.measurements || [],
+      intakes: data.intakes || []
     };
   } catch {
     return {
       sessions: [],
-      measurements: []
+      measurements: [],
+      intakes: []
     };
   }
 }
@@ -1208,7 +1239,8 @@ function TrainingTracker() {
   const [selectedId, setSelectedId] = useState(null);
   const [data, setData] = useState({
     sessions: [],
-    measurements: []
+    measurements: [],
+    intakes: []
   });
   const [loadingClients, setLoadingClients] = useState(true);
   const [loadingData, setLoadingData] = useState(false);
@@ -1245,7 +1277,8 @@ function TrainingTracker() {
       const d = await loadClientData(selectedId);
       setData({
         sessions: d.sessions || [],
-        measurements: d.measurements || []
+        measurements: d.measurements || [],
+        intakes: d.intakes || []
       });
       setLoadingData(false);
     })();
@@ -1283,7 +1316,8 @@ function TrainingTracker() {
       setSelectedId(list.length ? list[0].id : null);
       setData({
         sessions: [],
-        measurements: []
+        measurements: [],
+        intakes: []
       });
     }
   };
@@ -1326,7 +1360,8 @@ function TrainingTracker() {
     for (const c of payload.clients) {
       await saveClientData(c.id, payload.clientData && payload.clientData[c.id] || {
         sessions: [],
-        measurements: []
+        measurements: [],
+        intakes: []
       });
     }
     setClients(payload.clients);
@@ -1674,7 +1709,7 @@ function TrainingTracker() {
       borderBottom: `1px solid ${COLORS.borderSoft}`,
       marginBottom: 24
     }
-  }, [["training", "Training plannen"], ["progressie", "Progressie"], ["metingen", "Lichaamsmetingen"]].map(([key, label]) => /*#__PURE__*/React.createElement("div", {
+  }, [["training", "Training plannen"], ["progressie", "Progressie"], ["metingen", "Lichaamsmetingen"], ["intake", "Intake"]].map(([key, label]) => /*#__PURE__*/React.createElement("div", {
     key: key,
     onClick: () => setTab(key),
     style: {
@@ -1704,6 +1739,10 @@ function TrainingTracker() {
   }), tab === "metingen" && /*#__PURE__*/React.createElement(MetingenTab, {
     data: data,
     persist: persist
+  }), tab === "intake" && /*#__PURE__*/React.createElement(IntakeTab, {
+    data: data,
+    persist: persist,
+    clientName: selectedClient.name
   })))), libraryOpen && /*#__PURE__*/React.createElement(LibraryModal, {
     library: library,
     libState: libState,
@@ -1728,12 +1767,12 @@ function emptySet(mode) {
     weightB: ""
   };
 }
-function emptyExercise() {
+function emptyExercise(mode = "reps") {
   return {
     id: uid(),
     name: "",
-    mode: "reps",
-    sets: [emptySet("reps")],
+    mode,
+    sets: [emptySet(mode)],
     notes: "",
     durationUnit: "sec",
     sharedWith: "both",
@@ -1742,13 +1781,15 @@ function emptyExercise() {
     variant: "normal"
   };
 }
-function emptyBlock(type = "single", exerciseCount = 1) {
+// stretching / cooling-down exercises are usually timed, so those start in time mode
+function emptyBlock(type = "single", exerciseCount = 1, section = "main") {
   return {
     id: uid(),
     type,
+    section,
     exercises: Array.from({
       length: exerciseCount
-    }, () => emptyExercise())
+    }, () => emptyExercise(section === "cooldown" ? "time" : "reps"))
   };
 }
 
@@ -1805,6 +1846,7 @@ function sessionBlocksToFormBlocks(blocks) {
   return (blocks || []).map(b => ({
     id: uid(),
     type: b.type,
+    section: sectionOf(b),
     exercises: (b.exercises || []).map(ex => ({
       id: uid(),
       name: ex.name,
@@ -1848,6 +1890,7 @@ function findDuoPartnerSession(partnerSessions, ownSession, ownClientName) {
 function mergeDuoBlocksForEdit(primaryBlocks, partnerBlocks) {
   const partnerPool = (partnerBlocks || []).map((b, bi) => ({
     bi,
+    section: sectionOf(b),
     exercises: (b.exercises || []).map(ex => ({
       ex,
       used: false
@@ -1875,6 +1918,7 @@ function mergeDuoBlocksForEdit(primaryBlocks, partnerBlocks) {
   const mergedBlocks = (primaryBlocks || []).map((b, bi) => ({
     id: uid(),
     type: b.type,
+    section: sectionOf(b),
     exercises: (b.exercises || []).map(ex => {
       const partnerEx = takePartnerExercise(bi, ex.name);
       const mode = ex.mode || "reps";
@@ -1910,12 +1954,14 @@ function mergeDuoBlocksForEdit(primaryBlocks, partnerBlocks) {
   }));
 
   // leftover partner exercises that have no match on the primary side at all
-  const leftovers = [];
-  partnerPool.forEach(pb => pb.exercises.forEach(e => !e.used && leftovers.push(e.ex)));
-  if (leftovers.length > 0) {
+  SECTIONS.forEach(sec => {
+    const leftovers = [];
+    partnerPool.forEach(pb => pb.section === sec.id && pb.exercises.forEach(e => !e.used && leftovers.push(e.ex)));
+    if (leftovers.length === 0) return;
     mergedBlocks.push({
       id: uid(),
       type: "single",
+      section: sec.id,
       exercises: leftovers.map(ex => ({
         id: uid(),
         name: ex.name,
@@ -1937,8 +1983,8 @@ function mergeDuoBlocksForEdit(primaryBlocks, partnerBlocks) {
         }))
       }))
     });
-  }
-  return mergedBlocks;
+  });
+  return sortBySection(mergedBlocks);
 }
 
 // ================= Training tab =================
@@ -2008,9 +2054,9 @@ function TrainingTab({
     };
   }, [expandedId, data.sessions, clients, clientName]); // eslint-disable-line
 
-  const addBlock = (type, count) => setForm(f => ({
+  const addBlock = (type, count, section = "main") => setForm(f => ({
     ...f,
-    blocks: [...f.blocks, emptyBlock(type, count)]
+    blocks: sortBySection([...f.blocks, emptyBlock(type, count, section)])
   }));
   const removeBlock = blockId => setForm(f => ({
     ...f,
@@ -2018,8 +2064,12 @@ function TrainingTab({
   }));
   const moveBlock = (blockId, direction) => setForm(f => {
     const idx = f.blocks.findIndex(b => b.id === blockId);
-    const target = idx + direction;
-    if (idx === -1 || target < 0 || target >= f.blocks.length) return f;
+    if (idx === -1) return f;
+    // blocks only move within their own section (warm-up / core / cool-down)
+    const sec = sectionOf(f.blocks[idx]);
+    let target = idx + direction;
+    while (target >= 0 && target < f.blocks.length && sectionOf(f.blocks[target]) !== sec) target += direction;
+    if (target < 0 || target >= f.blocks.length) return f;
     const blocks = [...f.blocks];
     [blocks[idx], blocks[target]] = [blocks[target], blocks[idx]];
     return {
@@ -2038,7 +2088,7 @@ function TrainingTab({
     ...f,
     blocks: f.blocks.map(b => b.id === blockId ? {
       ...b,
-      exercises: [...b.exercises, emptyExercise()]
+      exercises: [...b.exercises, emptyExercise(sectionOf(b) === "cooldown" ? "time" : "reps")]
     } : b)
   }));
   const removeExerciseFromBlock = (blockId, exId) => setForm(f => ({
@@ -2211,7 +2261,7 @@ function TrainingTab({
       } : ex)
     } : b)
   }));
-  const buildBlocksForPerspective = perspective => form.blocks.map(b => ({
+  const buildBlocksForPerspective = perspective => sortBySection(form.blocks).map(b => ({
     ...b,
     exercises: b.exercises.filter(ex => {
       const shared = ex.sharedWith || "both";
@@ -2353,20 +2403,25 @@ function TrainingTab({
   });
   const sessionToText = s => {
     const lines = [`TRAINING · ${clientName} · ${fmtDate(s.date)}`, ""];
-    s.blocks.forEach((b, i) => {
-      if (b.type !== "single") lines.push(`${blockBadgeLabel(b.type).toUpperCase()}`);
-      b.exercises.forEach(ex => {
-        lines.push(`${ex.name}`);
-        ex.sets.forEach((set, si) => {
-          if (ex.mode === "time") {
-            lines.push(`  set ${si + 1}: ${fmtDuration(set.duration)}${set.weight ? ` @ ${set.weight}kg` : ""}`);
-          } else {
-            lines.push(`  set ${si + 1}: ${set.reps} reps${set.weight ? ` @ ${set.weight}kg` : ""}`);
-          }
+    const groups = groupBlocksBySection(s.blocks);
+    const headings = showSectionHeadings(groups);
+    groups.forEach(g => {
+      if (headings) lines.push(`=== ${g.section.label.toUpperCase()} ===`, "");
+      g.blocks.forEach(b => {
+        if (b.type !== "single") lines.push(`${blockBadgeLabel(b.type).toUpperCase()}`);
+        b.exercises.forEach(ex => {
+          lines.push(`${ex.name}`);
+          ex.sets.forEach((set, si) => {
+            if (ex.mode === "time") {
+              lines.push(`  set ${si + 1}: ${fmtDuration(set.duration)}${set.weight ? ` @ ${set.weight}kg` : ""}`);
+            } else {
+              lines.push(`  set ${si + 1}: ${set.reps} reps${set.weight ? ` @ ${set.weight}kg` : ""}`);
+            }
+          });
+          if (ex.notes) lines.push(`  (${ex.notes})`);
         });
-        if (ex.notes) lines.push(`  (${ex.notes})`);
+        lines.push("");
       });
-      lines.push("");
     });
     if (s.notes) lines.push(`Notities: ${s.notes}`, "");
     lines.push("— Art of Training");
@@ -2379,13 +2434,19 @@ function TrainingTab({
     });
   };
   const handleDownload = s => {
-    const rowsHtml = s.blocks.map(b => {
-      const badge = b.type !== "single" ? `<div style="display:inline-block;background:#CF5550;color:#fff;font-size:11px;font-weight:700;letter-spacing:.05em;text-transform:uppercase;padding:3px 9px;border-radius:4px;margin-bottom:8px;">${blockBadgeLabel(b.type)}</div>` : "";
-      const exercisesHtml = b.exercises.map(ex => {
-        const setsHtml = ex.sets.map((set, si) => ex.mode === "time" ? `<span style="display:inline-block;background:#1B1917;border:1px solid #37332E;border-radius:4px;padding:3px 8px;margin:2px;font-family:monospace;font-size:12px;color:#ddd;">${fmtDuration(set.duration)}${set.weight ? ` · ${set.weight}kg` : ""}</span>` : `<span style="display:inline-block;background:#1B1917;border:1px solid #37332E;border-radius:4px;padding:3px 8px;margin:2px;font-family:monospace;font-size:12px;color:#ddd;">${set.reps}×${set.weight || 0}kg</span>`).join("");
-        return `<div style="margin-bottom:10px;"><div style="font-weight:700;color:#fff;margin-bottom:4px;">${ex.name}</div><div>${setsHtml}</div>${ex.notes ? `<div style="font-size:12px;color:#A69E92;font-style:italic;margin-top:4px;">${ex.notes}</div>` : ""}</div>`;
+    const groups = groupBlocksBySection(s.blocks);
+    const headings = showSectionHeadings(groups);
+    const rowsHtml = groups.map(g => {
+      const blocksHtml = g.blocks.map(b => {
+        const badge = b.type !== "single" ? `<div style="display:inline-block;background:#CF5550;color:#fff;font-size:11px;font-weight:700;letter-spacing:.05em;text-transform:uppercase;padding:3px 9px;border-radius:4px;margin-bottom:8px;">${blockBadgeLabel(b.type)}</div>` : "";
+        const exercisesHtml = b.exercises.map(ex => {
+          const setsHtml = ex.sets.map((set, si) => ex.mode === "time" ? `<span style="display:inline-block;background:#1B1917;border:1px solid #37332E;border-radius:4px;padding:3px 8px;margin:2px;font-family:monospace;font-size:12px;color:#ddd;">${fmtDuration(set.duration)}${set.weight ? ` · ${set.weight}kg` : ""}</span>` : `<span style="display:inline-block;background:#1B1917;border:1px solid #37332E;border-radius:4px;padding:3px 8px;margin:2px;font-family:monospace;font-size:12px;color:#ddd;">${set.reps}×${set.weight || 0}kg</span>`).join("");
+          return `<div style="margin-bottom:10px;"><div style="font-weight:700;color:#fff;margin-bottom:4px;">${ex.name}</div><div>${setsHtml}</div>${ex.notes ? `<div style="font-size:12px;color:#A69E92;font-style:italic;margin-top:4px;">${ex.notes}</div>` : ""}</div>`;
+        }).join("");
+        return `<div style="border:1px solid #37332E;border-radius:8px;padding:14px;margin-bottom:12px;">${badge}${exercisesHtml}</div>`;
       }).join("");
-      return `<div style="border:1px solid #37332E;border-radius:8px;padding:14px;margin-bottom:12px;">${badge}${exercisesHtml}</div>`;
+      const heading = headings ? `<div style="font-size:13px;font-weight:800;letter-spacing:.08em;text-transform:uppercase;color:#CF5550;border-bottom:2px solid #CF5550;padding-bottom:4px;margin:22px 0 12px;">${g.section.label}</div>` : "";
+      return heading + blocksHtml;
     }).join("");
     const html = `<!DOCTYPE html><html lang="nl"><head><meta charset="utf-8"><title>Training ${fmtDate(s.date)} — ${clientName}</title></head>
 <body style="margin:0;background:#121110;color:#F7F4EE;font-family:-apple-system,Segoe UI,sans-serif;padding:32px;">
@@ -2525,423 +2586,454 @@ function TrainingTab({
     style: {
       color: COLORS.text
     }
-  }, partner.name), ". Per oefening kan je aanduiden of ze samen dezelfde oefening doen (met eigen gewicht/reps) of dat een oefening enkel voor één van beiden is. Deze sessie wordt automatisch ook bij ", partner.name, " gelogd."), form.blocks.map((block, bIdx) => /*#__PURE__*/React.createElement("div", {
-    key: block.id,
-    style: {
-      border: `1px solid ${block.type !== "single" ? COLORS.accent + "66" : COLORS.borderSoft}`,
-      borderRadius: 8,
-      padding: 12,
-      marginBottom: 12,
-      background: COLORS.bg
-    }
-  }, /*#__PURE__*/React.createElement("div", {
-    style: {
-      display: "flex",
-      justifyContent: "space-between",
-      alignItems: "center",
-      marginBottom: 12,
-      flexWrap: "wrap",
-      gap: 8
-    }
-  }, /*#__PURE__*/React.createElement(Segmented, {
-    options: BLOCK_TYPES,
-    value: block.type,
-    onChange: t => setBlockType(block.id, t)
-  }), /*#__PURE__*/React.createElement("div", {
-    style: {
-      display: "flex",
-      alignItems: "center",
-      gap: 10
-    }
-  }, form.blocks.length > 1 && /*#__PURE__*/React.createElement("div", {
-    style: {
-      display: "flex",
-      gap: 2
-    }
-  }, /*#__PURE__*/React.createElement("span", {
-    onClick: () => moveBlock(block.id, -1),
-    style: {
-      cursor: bIdx === 0 ? "default" : "pointer",
-      color: bIdx === 0 ? COLORS.borderSoft : COLORS.textFaint,
-      padding: "0 4px"
-    }
-  }, "▲"), /*#__PURE__*/React.createElement("span", {
-    onClick: () => moveBlock(block.id, 1),
-    style: {
-      cursor: bIdx === form.blocks.length - 1 ? "default" : "pointer",
-      color: bIdx === form.blocks.length - 1 ? COLORS.borderSoft : COLORS.textFaint,
-      padding: "0 4px"
-    }
-  }, "▼")), form.blocks.length > 1 && /*#__PURE__*/React.createElement("span", {
-    onClick: () => removeBlock(block.id),
-    style: {
-      color: COLORS.accent,
-      fontSize: 11.5,
-      cursor: "pointer"
-    }
-  }, "groep verwijderen"))), block.exercises.map((ex, exIdx) => /*#__PURE__*/React.createElement("div", {
-    key: ex.id,
-    style: {
-      background: COLORS.surface,
-      border: `1px solid ${COLORS.borderSoft}`,
-      borderRadius: 8,
-      padding: 12,
-      marginBottom: 10
-    }
-  }, /*#__PURE__*/React.createElement("div", {
-    style: {
-      display: "flex",
-      gap: 8,
-      marginBottom: 10,
-      alignItems: "center"
-    }
-  }, block.exercises.length > 1 && /*#__PURE__*/React.createElement("div", {
-    style: {
-      display: "flex",
-      flexDirection: "column",
-      flexShrink: 0
-    }
-  }, /*#__PURE__*/React.createElement("span", {
-    onClick: () => moveExerciseInBlock(block.id, ex.id, -1),
-    style: {
-      cursor: exIdx === 0 ? "default" : "pointer",
-      color: exIdx === 0 ? COLORS.borderSoft : COLORS.textFaint,
-      fontSize: 11,
-      lineHeight: "12px"
-    }
-  }, "▲"), /*#__PURE__*/React.createElement("span", {
-    onClick: () => moveExerciseInBlock(block.id, ex.id, 1),
-    style: {
-      cursor: exIdx === block.exercises.length - 1 ? "default" : "pointer",
-      color: exIdx === block.exercises.length - 1 ? COLORS.borderSoft : COLORS.textFaint,
-      fontSize: 11,
-      lineHeight: "12px"
-    }
-  }, "▼")), /*#__PURE__*/React.createElement("div", {
-    style: {
-      flex: 1
-    }
-  }, /*#__PURE__*/React.createElement(ExerciseCombobox, {
-    value: ex.name,
-    onChange: name => applyAutofill(block.id, ex.id, name),
-    library: library,
-    onAddToLibrary: onAddToLibrary
-  })), /*#__PURE__*/React.createElement(Segmented, {
-    options: [{
-      id: "reps",
-      label: "Herhalingen"
-    }, {
-      id: "time",
-      label: "Tijd"
-    }],
-    value: ex.mode,
-    onChange: m => setExerciseMode(block.id, ex.id, m)
-  }), ex.mode === "time" && /*#__PURE__*/React.createElement(Segmented, {
-    options: [{
-      id: "sec",
-      label: "sec"
-    }, {
-      id: "min",
-      label: "min"
-    }],
-    value: ex.durationUnit || "sec",
-    onChange: u => setExerciseDurationUnit(block.id, ex.id, u)
-  }), ex.name.trim() && /*#__PURE__*/React.createElement(Btn, {
-    variant: progressOpenIds[ex.id] ? "solid" : "subtle",
-    onClick: () => toggleProgress(ex.id),
-    style: {
-      padding: "8px 10px",
-      fontSize: 11.5
-    }
-  }, progressOpenIds[ex.id] ? "Verberg progressie" : "Progressie"), block.exercises.length > 1 && /*#__PURE__*/React.createElement(Btn, {
-    variant: "danger",
-    onClick: () => removeExerciseFromBlock(block.id, ex.id),
-    style: {
-      padding: "8px 10px"
-    }
-  }, "Verwijder")), progressOpenIds[ex.id] && ex.name.trim() && /*#__PURE__*/React.createElement("div", {
-    style: {
-      marginBottom: 10
-    }
-  }, /*#__PURE__*/React.createElement(InlineProgressPanel, {
-    sessions: data.sessions,
-    name: ex.name
-  })), (() => {
-    const match = matchImportantExercise(ex.name);
-    if (match?.assistTracking) {
-      return /*#__PURE__*/React.createElement("div", {
-        style: {
-          display: "flex",
-          gap: 10,
-          alignItems: "center",
-          marginBottom: 10,
-          flexWrap: "wrap"
-        }
-      }, /*#__PURE__*/React.createElement(Segmented, {
-        options: [{
-          id: "no",
-          label: "Zonder assistentie"
-        }, {
-          id: "yes",
-          label: "Met assistentie"
-        }],
-        value: ex.assisted ? "yes" : "no",
-        onChange: v => setExerciseAssisted(block.id, ex.id, v === "yes")
-      }), ex.assisted && /*#__PURE__*/React.createElement(Input, {
-        placeholder: "Welke rekker(s)? (bv. rood, groen+rood)",
-        value: ex.band || "",
-        onChange: e => setExerciseBand(block.id, ex.id, e.target.value),
-        style: {
-          width: 220,
-          fontSize: 12.5
-        }
-      }));
-    }
-    if (match?.kneeVariant) {
-      return /*#__PURE__*/React.createElement("div", {
-        style: {
-          marginBottom: 10
-        }
-      }, /*#__PURE__*/React.createElement(Segmented, {
-        options: [{
-          id: "normal",
-          label: "Normaal"
-        }, {
-          id: "knee",
-          label: "Op de knieën"
-        }],
-        value: ex.variant || "normal",
-        onChange: v => setExerciseVariant(block.id, ex.id, v)
-      }));
-    }
-    return null;
-  })(), partner && /*#__PURE__*/React.createElement("div", {
-    style: {
-      marginBottom: 10
-    }
-  }, /*#__PURE__*/React.createElement(Segmented, {
-    options: [{
-      id: "both",
-      label: "Beiden"
-    }, {
-      id: "onlyPrimary",
-      label: `Enkel ${clientName}`
-    }, {
-      id: "onlyPartner",
-      label: `Enkel ${partner.name}`
-    }],
-    value: ex.sharedWith || "both",
-    onChange: v => setExerciseSharedWith(block.id, ex.id, v)
-  })), /*#__PURE__*/React.createElement("div", {
-    style: {
-      display: "flex",
-      flexDirection: "column",
-      gap: 8
-    }
-  }, ex.sets.map((s, sIdx) => {
-    const showBoth = !!partner && (ex.sharedWith || "both") === "both";
+  }, partner.name), ". Per oefening kan je aanduiden of ze samen dezelfde oefening doen (met eigen gewicht/reps) of dat een oefening enkel voor één van beiden is. Deze sessie wordt automatisch ook bij ", partner.name, " gelogd."), SECTIONS.map(sec => {
+    const secBlocks = form.blocks.filter(b => sectionOf(b) === sec.id);
     return /*#__PURE__*/React.createElement("div", {
-      key: s.id,
+      key: sec.id,
+      style: {
+        marginBottom: 22
+      }
+    }, /*#__PURE__*/React.createElement("div", {
       style: {
         display: "flex",
-        flexDirection: "column",
-        gap: 4
+        alignItems: "baseline",
+        justifyContent: "space-between",
+        borderBottom: `2px solid ${COLORS.accent}`,
+        paddingBottom: 5,
+        marginBottom: 12
+      }
+    }, /*#__PURE__*/React.createElement("span", {
+      style: {
+        fontFamily: displayFont,
+        fontWeight: 800,
+        fontSize: 15,
+        letterSpacing: "0.06em",
+        textTransform: "uppercase",
+        color: COLORS.text
+      }
+    }, sec.label), /*#__PURE__*/React.createElement("span", {
+      style: {
+        fontSize: 11,
+        color: COLORS.textFaint
+      }
+    }, secBlocks.length === 0 ? "nog niets toegevoegd" : `${secBlocks.reduce((n, b) => n + b.exercises.length, 0)} oefening(en)`)), secBlocks.map((block, bIdx) => /*#__PURE__*/React.createElement("div", {
+      key: block.id,
+      style: {
+        border: `1px solid ${block.type !== "single" ? COLORS.accent + "66" : COLORS.borderSoft}`,
+        borderRadius: 8,
+        padding: 12,
+        marginBottom: 12,
+        background: COLORS.bg
+      }
+    }, /*#__PURE__*/React.createElement("div", {
+      style: {
+        display: "flex",
+        justifyContent: "space-between",
+        alignItems: "center",
+        marginBottom: 12,
+        flexWrap: "wrap",
+        gap: 8
+      }
+    }, /*#__PURE__*/React.createElement(Segmented, {
+      options: BLOCK_TYPES,
+      value: block.type,
+      onChange: t => setBlockType(block.id, t)
+    }), /*#__PURE__*/React.createElement("div", {
+      style: {
+        display: "flex",
+        alignItems: "center",
+        gap: 10
+      }
+    }, secBlocks.length > 1 && /*#__PURE__*/React.createElement("div", {
+      style: {
+        display: "flex",
+        gap: 2
+      }
+    }, /*#__PURE__*/React.createElement("span", {
+      onClick: () => moveBlock(block.id, -1),
+      style: {
+        cursor: bIdx === 0 ? "default" : "pointer",
+        color: bIdx === 0 ? COLORS.borderSoft : COLORS.textFaint,
+        padding: "0 4px"
+      }
+    }, "▲"), /*#__PURE__*/React.createElement("span", {
+      onClick: () => moveBlock(block.id, 1),
+      style: {
+        cursor: bIdx === secBlocks.length - 1 ? "default" : "pointer",
+        color: bIdx === secBlocks.length - 1 ? COLORS.borderSoft : COLORS.textFaint,
+        padding: "0 4px"
+      }
+    }, "▼")), (secBlocks.length > 1 || sec.id !== "main") && /*#__PURE__*/React.createElement("span", {
+      onClick: () => removeBlock(block.id),
+      style: {
+        color: COLORS.accent,
+        fontSize: 11.5,
+        cursor: "pointer"
+      }
+    }, "groep verwijderen"))), block.exercises.map((ex, exIdx) => /*#__PURE__*/React.createElement("div", {
+      key: ex.id,
+      style: {
+        background: COLORS.surface,
+        border: `1px solid ${COLORS.borderSoft}`,
+        borderRadius: 8,
+        padding: 12,
+        marginBottom: 10
       }
     }, /*#__PURE__*/React.createElement("div", {
       style: {
         display: "flex",
         gap: 8,
-        alignItems: "center",
-        flexWrap: "wrap"
+        marginBottom: 10,
+        alignItems: "center"
       }
-    }, /*#__PURE__*/React.createElement("span", {
-      style: {
-        fontFamily: monoFont,
-        fontSize: 11,
-        color: COLORS.textFaint,
-        width: 20
-      }
-    }, "#", sIdx + 1), showBoth && /*#__PURE__*/React.createElement("span", {
-      style: {
-        fontSize: 10.5,
-        color: COLORS.textFaint,
-        width: 66,
-        flexShrink: 0
-      }
-    }, clientName, ":"), ex.mode === "time" ? /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement(Input, {
-      type: "number",
-      placeholder: "tijd",
-      value: s.duration === "" ? "" : ex.durationUnit === "min" ? Number(s.duration) / 60 : s.duration,
-      onChange: e => {
-        const raw = e.target.value;
-        const seconds = raw === "" ? "" : String(ex.durationUnit === "min" ? Math.round(Number(raw) * 60) : Number(raw));
-        updateSet(block.id, ex.id, s.id, "duration", seconds);
-      },
-      style: {
-        width: 90,
-        fontFamily: monoFont
-      }
-    }), /*#__PURE__*/React.createElement("span", {
-      style: {
-        color: COLORS.textFaint,
-        fontSize: 11
-      }
-    }, ex.durationUnit === "min" ? "min" : "sec")) : /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement(Input, {
-      type: "number",
-      placeholder: "reps",
-      value: s.reps,
-      onChange: e => updateSet(block.id, ex.id, s.id, "reps", e.target.value),
-      style: {
-        width: 90,
-        fontFamily: monoFont
-      }
-    }), /*#__PURE__*/React.createElement("span", {
-      style: {
-        color: COLORS.textFaint,
-        fontSize: 12
-      }
-    }, "×")), /*#__PURE__*/React.createElement(Input, {
-      type: "number",
-      placeholder: "kg",
-      value: s.weight,
-      onChange: e => updateSet(block.id, ex.id, s.id, "weight", e.target.value),
-      style: {
-        width: 90,
-        fontFamily: monoFont
-      }
-    }), /*#__PURE__*/React.createElement("span", {
-      style: {
-        color: COLORS.textFaint,
-        fontSize: 11
-      }
-    }, "kg"), ex.sets.length > 1 && /*#__PURE__*/React.createElement("span", {
-      onClick: () => removeSet(block.id, ex.id, s.id),
-      style: {
-        color: COLORS.textFaint,
-        fontSize: 11,
-        cursor: "pointer",
-        marginLeft: 4
-      }
-    }, "verwijder")), showBoth && /*#__PURE__*/React.createElement("div", {
+    }, block.exercises.length > 1 && /*#__PURE__*/React.createElement("div", {
       style: {
         display: "flex",
-        gap: 8,
-        alignItems: "center",
-        flexWrap: "wrap"
-      }
-    }, /*#__PURE__*/React.createElement("span", {
-      style: {
-        width: 20
-      }
-    }), /*#__PURE__*/React.createElement("span", {
-      style: {
-        fontSize: 10.5,
-        color: COLORS.accent,
-        width: 66,
+        flexDirection: "column",
         flexShrink: 0
       }
-    }, partner.name, ":"), ex.mode === "time" ? /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement(Input, {
-      type: "number",
-      placeholder: "tijd",
-      value: s.durationB === "" ? "" : ex.durationUnit === "min" ? Number(s.durationB) / 60 : s.durationB,
-      onChange: e => {
-        const raw = e.target.value;
-        const seconds = raw === "" ? "" : String(ex.durationUnit === "min" ? Math.round(Number(raw) * 60) : Number(raw));
-        updateSet(block.id, ex.id, s.id, "durationB", seconds);
-      },
+    }, /*#__PURE__*/React.createElement("span", {
+      onClick: () => moveExerciseInBlock(block.id, ex.id, -1),
       style: {
-        width: 90,
-        fontFamily: monoFont
+        cursor: exIdx === 0 ? "default" : "pointer",
+        color: exIdx === 0 ? COLORS.borderSoft : COLORS.textFaint,
+        fontSize: 11,
+        lineHeight: "12px"
       }
+    }, "▲"), /*#__PURE__*/React.createElement("span", {
+      onClick: () => moveExerciseInBlock(block.id, ex.id, 1),
+      style: {
+        cursor: exIdx === block.exercises.length - 1 ? "default" : "pointer",
+        color: exIdx === block.exercises.length - 1 ? COLORS.borderSoft : COLORS.textFaint,
+        fontSize: 11,
+        lineHeight: "12px"
+      }
+    }, "▼")), /*#__PURE__*/React.createElement("div", {
+      style: {
+        flex: 1
+      }
+    }, /*#__PURE__*/React.createElement(ExerciseCombobox, {
+      value: ex.name,
+      onChange: name => applyAutofill(block.id, ex.id, name),
+      library: library,
+      onAddToLibrary: onAddToLibrary
+    })), /*#__PURE__*/React.createElement(Segmented, {
+      options: [{
+        id: "reps",
+        label: "Herhalingen"
+      }, {
+        id: "time",
+        label: "Tijd"
+      }],
+      value: ex.mode,
+      onChange: m => setExerciseMode(block.id, ex.id, m)
+    }), ex.mode === "time" && /*#__PURE__*/React.createElement(Segmented, {
+      options: [{
+        id: "sec",
+        label: "sec"
+      }, {
+        id: "min",
+        label: "min"
+      }],
+      value: ex.durationUnit || "sec",
+      onChange: u => setExerciseDurationUnit(block.id, ex.id, u)
+    }), ex.name.trim() && /*#__PURE__*/React.createElement(Btn, {
+      variant: progressOpenIds[ex.id] ? "solid" : "subtle",
+      onClick: () => toggleProgress(ex.id),
+      style: {
+        padding: "8px 10px",
+        fontSize: 11.5
+      }
+    }, progressOpenIds[ex.id] ? "Verberg progressie" : "Progressie"), block.exercises.length > 1 && /*#__PURE__*/React.createElement(Btn, {
+      variant: "danger",
+      onClick: () => removeExerciseFromBlock(block.id, ex.id),
+      style: {
+        padding: "8px 10px"
+      }
+    }, "Verwijder")), progressOpenIds[ex.id] && ex.name.trim() && /*#__PURE__*/React.createElement("div", {
+      style: {
+        marginBottom: 10
+      }
+    }, /*#__PURE__*/React.createElement(InlineProgressPanel, {
+      sessions: data.sessions,
+      name: ex.name
+    })), (() => {
+      const match = matchImportantExercise(ex.name);
+      if (match?.assistTracking) {
+        return /*#__PURE__*/React.createElement("div", {
+          style: {
+            display: "flex",
+            gap: 10,
+            alignItems: "center",
+            marginBottom: 10,
+            flexWrap: "wrap"
+          }
+        }, /*#__PURE__*/React.createElement(Segmented, {
+          options: [{
+            id: "no",
+            label: "Zonder assistentie"
+          }, {
+            id: "yes",
+            label: "Met assistentie"
+          }],
+          value: ex.assisted ? "yes" : "no",
+          onChange: v => setExerciseAssisted(block.id, ex.id, v === "yes")
+        }), ex.assisted && /*#__PURE__*/React.createElement(Input, {
+          placeholder: "Welke rekker(s)? (bv. rood, groen+rood)",
+          value: ex.band || "",
+          onChange: e => setExerciseBand(block.id, ex.id, e.target.value),
+          style: {
+            width: 220,
+            fontSize: 12.5
+          }
+        }));
+      }
+      if (match?.kneeVariant) {
+        return /*#__PURE__*/React.createElement("div", {
+          style: {
+            marginBottom: 10
+          }
+        }, /*#__PURE__*/React.createElement(Segmented, {
+          options: [{
+            id: "normal",
+            label: "Normaal"
+          }, {
+            id: "knee",
+            label: "Op de knieën"
+          }],
+          value: ex.variant || "normal",
+          onChange: v => setExerciseVariant(block.id, ex.id, v)
+        }));
+      }
+      return null;
+    })(), partner && /*#__PURE__*/React.createElement("div", {
+      style: {
+        marginBottom: 10
+      }
+    }, /*#__PURE__*/React.createElement(Segmented, {
+      options: [{
+        id: "both",
+        label: "Beiden"
+      }, {
+        id: "onlyPrimary",
+        label: `Enkel ${clientName}`
+      }, {
+        id: "onlyPartner",
+        label: `Enkel ${partner.name}`
+      }],
+      value: ex.sharedWith || "both",
+      onChange: v => setExerciseSharedWith(block.id, ex.id, v)
+    })), /*#__PURE__*/React.createElement("div", {
+      style: {
+        display: "flex",
+        flexDirection: "column",
+        gap: 8
+      }
+    }, ex.sets.map((s, sIdx) => {
+      const showBoth = !!partner && (ex.sharedWith || "both") === "both";
+      return /*#__PURE__*/React.createElement("div", {
+        key: s.id,
+        style: {
+          display: "flex",
+          flexDirection: "column",
+          gap: 4
+        }
+      }, /*#__PURE__*/React.createElement("div", {
+        style: {
+          display: "flex",
+          gap: 8,
+          alignItems: "center",
+          flexWrap: "wrap"
+        }
+      }, /*#__PURE__*/React.createElement("span", {
+        style: {
+          fontFamily: monoFont,
+          fontSize: 11,
+          color: COLORS.textFaint,
+          width: 20
+        }
+      }, "#", sIdx + 1), showBoth && /*#__PURE__*/React.createElement("span", {
+        style: {
+          fontSize: 10.5,
+          color: COLORS.textFaint,
+          width: 66,
+          flexShrink: 0
+        }
+      }, clientName, ":"), ex.mode === "time" ? /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement(Input, {
+        type: "number",
+        placeholder: "tijd",
+        value: s.duration === "" ? "" : ex.durationUnit === "min" ? Number(s.duration) / 60 : s.duration,
+        onChange: e => {
+          const raw = e.target.value;
+          const seconds = raw === "" ? "" : String(ex.durationUnit === "min" ? Math.round(Number(raw) * 60) : Number(raw));
+          updateSet(block.id, ex.id, s.id, "duration", seconds);
+        },
+        style: {
+          width: 90,
+          fontFamily: monoFont
+        }
+      }), /*#__PURE__*/React.createElement("span", {
+        style: {
+          color: COLORS.textFaint,
+          fontSize: 11
+        }
+      }, ex.durationUnit === "min" ? "min" : "sec")) : /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement(Input, {
+        type: "number",
+        placeholder: "reps",
+        value: s.reps,
+        onChange: e => updateSet(block.id, ex.id, s.id, "reps", e.target.value),
+        style: {
+          width: 90,
+          fontFamily: monoFont
+        }
+      }), /*#__PURE__*/React.createElement("span", {
+        style: {
+          color: COLORS.textFaint,
+          fontSize: 12
+        }
+      }, "×")), /*#__PURE__*/React.createElement(Input, {
+        type: "number",
+        placeholder: "kg",
+        value: s.weight,
+        onChange: e => updateSet(block.id, ex.id, s.id, "weight", e.target.value),
+        style: {
+          width: 90,
+          fontFamily: monoFont
+        }
+      }), /*#__PURE__*/React.createElement("span", {
+        style: {
+          color: COLORS.textFaint,
+          fontSize: 11
+        }
+      }, "kg"), ex.sets.length > 1 && /*#__PURE__*/React.createElement("span", {
+        onClick: () => removeSet(block.id, ex.id, s.id),
+        style: {
+          color: COLORS.textFaint,
+          fontSize: 11,
+          cursor: "pointer",
+          marginLeft: 4
+        }
+      }, "verwijder")), showBoth && /*#__PURE__*/React.createElement("div", {
+        style: {
+          display: "flex",
+          gap: 8,
+          alignItems: "center",
+          flexWrap: "wrap"
+        }
+      }, /*#__PURE__*/React.createElement("span", {
+        style: {
+          width: 20
+        }
+      }), /*#__PURE__*/React.createElement("span", {
+        style: {
+          fontSize: 10.5,
+          color: COLORS.accent,
+          width: 66,
+          flexShrink: 0
+        }
+      }, partner.name, ":"), ex.mode === "time" ? /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement(Input, {
+        type: "number",
+        placeholder: "tijd",
+        value: s.durationB === "" ? "" : ex.durationUnit === "min" ? Number(s.durationB) / 60 : s.durationB,
+        onChange: e => {
+          const raw = e.target.value;
+          const seconds = raw === "" ? "" : String(ex.durationUnit === "min" ? Math.round(Number(raw) * 60) : Number(raw));
+          updateSet(block.id, ex.id, s.id, "durationB", seconds);
+        },
+        style: {
+          width: 90,
+          fontFamily: monoFont
+        }
+      }), /*#__PURE__*/React.createElement("span", {
+        style: {
+          color: COLORS.textFaint,
+          fontSize: 11
+        }
+      }, ex.durationUnit === "min" ? "min" : "sec")) : /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement(Input, {
+        type: "number",
+        placeholder: "reps",
+        value: s.repsB || "",
+        onChange: e => updateSet(block.id, ex.id, s.id, "repsB", e.target.value),
+        style: {
+          width: 90,
+          fontFamily: monoFont
+        }
+      }), /*#__PURE__*/React.createElement("span", {
+        style: {
+          color: COLORS.textFaint,
+          fontSize: 12
+        }
+      }, "×")), /*#__PURE__*/React.createElement(Input, {
+        type: "number",
+        placeholder: "kg",
+        value: s.weightB || "",
+        onChange: e => updateSet(block.id, ex.id, s.id, "weightB", e.target.value),
+        style: {
+          width: 90,
+          fontFamily: monoFont
+        }
+      }), /*#__PURE__*/React.createElement("span", {
+        style: {
+          color: COLORS.textFaint,
+          fontSize: 11
+        }
+      }, "kg")));
     }), /*#__PURE__*/React.createElement("span", {
+      onClick: () => addSet(block.id, ex.id),
       style: {
-        color: COLORS.textFaint,
-        fontSize: 11
+        color: COLORS.accent,
+        fontSize: 12,
+        cursor: "pointer",
+        marginTop: 2
       }
-    }, ex.durationUnit === "min" ? "min" : "sec")) : /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement(Input, {
-      type: "number",
-      placeholder: "reps",
-      value: s.repsB || "",
-      onChange: e => updateSet(block.id, ex.id, s.id, "repsB", e.target.value),
+    }, "+ set toevoegen")), /*#__PURE__*/React.createElement("div", {
       style: {
-        width: 90,
-        fontFamily: monoFont
+        marginTop: 10
       }
-    }), /*#__PURE__*/React.createElement("span", {
+    }, /*#__PURE__*/React.createElement(Input, {
+      placeholder: "Opmerking bij deze oefening (optioneel) — bv. techniekfocus, tempo, ROM...",
+      value: ex.notes || "",
+      onChange: e => updateExerciseNotes(block.id, ex.id, e.target.value),
       style: {
-        color: COLORS.textFaint,
-        fontSize: 12
+        fontSize: 12.5
       }
-    }, "×")), /*#__PURE__*/React.createElement(Input, {
-      type: "number",
-      placeholder: "kg",
-      value: s.weightB || "",
-      onChange: e => updateSet(block.id, ex.id, s.id, "weightB", e.target.value),
+    })))), /*#__PURE__*/React.createElement("span", {
+      onClick: () => addExerciseToBlock(block.id),
       style: {
-        width: 90,
-        fontFamily: monoFont
+        color: COLORS.accent,
+        fontSize: 12.5,
+        cursor: "pointer",
+        fontWeight: 600
       }
-    }), /*#__PURE__*/React.createElement("span", {
+    }, "+ oefening toevoegen aan deze groep"))), /*#__PURE__*/React.createElement("div", {
       style: {
-        color: COLORS.textFaint,
-        fontSize: 11
+        display: "flex",
+        gap: 14
       }
-    }, "kg")));
-  }), /*#__PURE__*/React.createElement("span", {
-    onClick: () => addSet(block.id, ex.id),
-    style: {
-      color: COLORS.accent,
-      fontSize: 12,
-      cursor: "pointer",
-      marginTop: 2
-    }
-  }, "+ set toevoegen")), /*#__PURE__*/React.createElement("div", {
-    style: {
-      marginTop: 10
-    }
-  }, /*#__PURE__*/React.createElement(Input, {
-    placeholder: "Opmerking bij deze oefening (optioneel) — bv. techniekfocus, tempo, ROM...",
-    value: ex.notes || "",
-    onChange: e => updateExerciseNotes(block.id, ex.id, e.target.value),
-    style: {
-      fontSize: 12.5
-    }
-  })))), /*#__PURE__*/React.createElement("span", {
-    onClick: () => addExerciseToBlock(block.id),
-    style: {
-      color: COLORS.accent,
-      fontSize: 12.5,
-      cursor: "pointer",
-      fontWeight: 600
-    }
-  }, "+ oefening toevoegen aan deze groep"))), /*#__PURE__*/React.createElement("div", {
+    }, /*#__PURE__*/React.createElement("span", {
+      onClick: () => addBlock("single", 1, sec.id),
+      style: {
+        color: COLORS.accent,
+        fontSize: 13,
+        cursor: "pointer",
+        fontWeight: 700
+      }
+    }, "+ Losse oefening"), /*#__PURE__*/React.createElement("span", {
+      onClick: () => addBlock("superset", 2, sec.id),
+      style: {
+        color: COLORS.accent,
+        fontSize: 13,
+        cursor: "pointer",
+        fontWeight: 700
+      }
+    }, "+ Superset / triset / circuit")));
+  }), /*#__PURE__*/React.createElement("div", {
     style: {
       display: "flex",
-      justifyContent: "space-between",
+      justifyContent: "flex-end",
       marginTop: 6
     }
   }, /*#__PURE__*/React.createElement("div", {
-    style: {
-      display: "flex",
-      gap: 14
-    }
-  }, /*#__PURE__*/React.createElement("span", {
-    onClick: () => addBlock("single", 1),
-    style: {
-      color: COLORS.accent,
-      fontSize: 13,
-      cursor: "pointer",
-      fontWeight: 700
-    }
-  }, "+ Losse oefening"), /*#__PURE__*/React.createElement("span", {
-    onClick: () => addBlock("superset", 2),
-    style: {
-      color: COLORS.accent,
-      fontSize: 13,
-      cursor: "pointer",
-      fontWeight: 700
-    }
-  }, "+ Superset / triset / circuit")), /*#__PURE__*/React.createElement("div", {
     style: {
       display: "flex",
       gap: 8
@@ -3052,7 +3144,23 @@ function TrainingTab({
           fontStyle: "italic",
           marginBottom: 10
         }
-      }, partnerPreview === null ? `Kan de voorbereiding van ${s.duoWith} niet terugvinden — enkel jouw kant wordt getoond.` : "Bezig met laden van de kant van " + s.duoWith + "…"), displayBlocks.map(b => /*#__PURE__*/React.createElement("div", {
+      }, partnerPreview === null ? `Kan de voorbereiding van ${s.duoWith} niet terugvinden — enkel jouw kant wordt getoond.` : "Bezig met laden van de kant van " + s.duoWith + "…"), groupBlocksBySection(displayBlocks).map((g, gi, allGroups) => /*#__PURE__*/React.createElement("div", {
+        key: g.section.id,
+        style: {
+          marginBottom: 6
+        }
+      }, showSectionHeadings(allGroups) && /*#__PURE__*/React.createElement("div", {
+        style: {
+          fontSize: 11,
+          fontWeight: 800,
+          letterSpacing: "0.08em",
+          textTransform: "uppercase",
+          color: COLORS.accent,
+          borderBottom: `1px solid ${COLORS.accent}55`,
+          paddingBottom: 3,
+          margin: "6px 0 10px"
+        }
+      }, g.section.label), g.blocks.map(b => /*#__PURE__*/React.createElement("div", {
         key: b.id,
         style: {
           marginBottom: 12
@@ -3130,7 +3238,7 @@ function TrainingTab({
           fontStyle: "italic",
           marginTop: 4
         }
-      }, ex.notes))))), /*#__PURE__*/React.createElement("div", {
+      }, ex.notes))))))), /*#__PURE__*/React.createElement("div", {
         style: {
           display: "flex",
           gap: 14,
@@ -3519,6 +3627,323 @@ function ProgressieTab({
     metric: result.metric,
     height: 300,
     emptyLabel: `Nog te weinig datapunten voor "${selectedLabel}". Log nog een sessie met deze oefening.`
+  })));
+}
+
+// ================= Intake tab =================
+const INTAKE_FIELDS = [{
+  key: "goal",
+  label: "Doelstelling",
+  placeholder: "Wat wil de klant bereiken? (bv. 5 kg vet verliezen, sterker worden, marathon...)"
+}, {
+  key: "motivation",
+  label: "Motivatie & verwachtingen",
+  placeholder: "Waarom nu? Wat verwacht de klant van de begeleiding?"
+}, {
+  key: "experience",
+  label: "Trainingsachtergrond",
+  placeholder: "Eerdere sporten/training, huidige activiteit, ervaring met krachttraining..."
+}, {
+  key: "health",
+  label: "Blessures & medische aandachtspunten",
+  placeholder: "Blessures, pijntjes, operaties, medicatie, beperkingen..."
+}, {
+  key: "lifestyle",
+  label: "Levensstijl",
+  placeholder: "Beroep, slaap, voeding, stress, dagritme..."
+}, {
+  key: "availability",
+  label: "Beschikbaarheid & frequentie",
+  placeholder: "Gewenst aantal sessies per week, vaste dagen/uren..."
+}, {
+  key: "agreements",
+  label: "Afspraken & aanpak",
+  placeholder: "Wat spreken jullie af? Eerste focus, opvolgmomenten, formule..."
+}, {
+  key: "notes",
+  label: "Overige notities",
+  placeholder: "Alles wat verder nuttig is om te weten..."
+}];
+function TextArea({
+  style,
+  ...props
+}) {
+  return /*#__PURE__*/React.createElement("textarea", {
+    ...props,
+    style: {
+      fontFamily: bodyFont,
+      fontSize: 13,
+      background: COLORS.bg,
+      color: COLORS.text,
+      border: `1px solid ${COLORS.border}`,
+      borderRadius: 5,
+      padding: "8px 10px",
+      outline: "none",
+      width: "100%",
+      boxSizing: "border-box",
+      minHeight: 64,
+      resize: "vertical",
+      lineHeight: 1.45,
+      ...style
+    }
+  });
+}
+function IntakeTab({
+  data,
+  persist,
+  clientName
+}) {
+  const emptyIntake = () => ({
+    date: todayISO(),
+    goal: "",
+    motivation: "",
+    experience: "",
+    health: "",
+    lifestyle: "",
+    availability: "",
+    agreements: "",
+    notes: ""
+  });
+  const intakes = data.intakes || [];
+  const [showForm, setShowForm] = useState(false);
+  const [editingId, setEditingId] = useState(null);
+  const [form, setForm] = useState(emptyIntake());
+  const [expandedId, setExpandedId] = useState(null);
+  const [confirmDeleteId, setConfirmDeleteId] = useState(null);
+  const sorted = [...intakes].sort((a, b) => a.date < b.date ? 1 : -1);
+  const closeForm = () => {
+    setShowForm(false);
+    setEditingId(null);
+    setForm(emptyIntake());
+  };
+  const hasContent = INTAKE_FIELDS.some(f => (form[f.key] || "").trim());
+  const saveIntake = () => {
+    if (!hasContent) return;
+    const clean = {
+      ...form
+    };
+    INTAKE_FIELDS.forEach(f => clean[f.key] = (clean[f.key] || "").trim());
+    const newId = editingId || uid();
+    const next = editingId ? intakes.map(i => i.id === editingId ? {
+      ...clean,
+      id: editingId
+    } : i) : [{
+      ...clean,
+      id: newId
+    }, ...intakes];
+    persist({
+      ...data,
+      intakes: next
+    });
+    setExpandedId(newId);
+    closeForm();
+  };
+  const startEdit = i => {
+    setForm({
+      ...emptyIntake(),
+      ...i
+    });
+    setEditingId(i.id);
+    setShowForm(true);
+    setConfirmDeleteId(null);
+  };
+  const deleteIntake = id => {
+    persist({
+      ...data,
+      intakes: intakes.filter(i => i.id !== id)
+    });
+    setConfirmDeleteId(null);
+    if (expandedId === id) setExpandedId(null);
+  };
+  return /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "flex",
+      justifyContent: "space-between",
+      alignItems: "center",
+      marginBottom: 16
+    }
+  }, /*#__PURE__*/React.createElement(SectionTitle, {
+    sub: `${sorted.length} intake${sorted.length === 1 ? "" : "s"} voor ${clientName}`
+  }, "Intakegesprekken"), !showForm && /*#__PURE__*/React.createElement(Btn, {
+    onClick: () => setShowForm(true)
+  }, "+ Nieuwe intake")), showForm && /*#__PURE__*/React.createElement("div", {
+    style: {
+      background: COLORS.surface,
+      border: `1px solid ${COLORS.border}`,
+      borderRadius: 10,
+      padding: 18,
+      marginBottom: 22
+    }
+  }, editingId && /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 11.5,
+      color: COLORS.accent,
+      fontWeight: 700,
+      marginBottom: 10,
+      textTransform: "uppercase",
+      letterSpacing: "0.04em"
+    }
+  }, "Intake bewerken"), /*#__PURE__*/React.createElement("div", {
+    style: {
+      width: 180,
+      marginBottom: 14
+    }
+  }, /*#__PURE__*/React.createElement(Label, null, "Datum van het gesprek"), /*#__PURE__*/React.createElement(Input, {
+    type: "date",
+    value: form.date,
+    onChange: e => setForm(f => ({
+      ...f,
+      date: e.target.value
+    }))
+  })), INTAKE_FIELDS.map(f => /*#__PURE__*/React.createElement("div", {
+    key: f.key,
+    style: {
+      marginBottom: 14
+    }
+  }, /*#__PURE__*/React.createElement(Label, null, f.label), /*#__PURE__*/React.createElement(TextArea, {
+    placeholder: f.placeholder,
+    value: form[f.key] || "",
+    onChange: e => setForm(prev => ({
+      ...prev,
+      [f.key]: e.target.value
+    }))
+  }))), /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "flex",
+      justifyContent: "flex-end",
+      gap: 8
+    }
+  }, /*#__PURE__*/React.createElement(Btn, {
+    variant: "ghost",
+    onClick: closeForm
+  }, "Annuleer"), /*#__PURE__*/React.createElement(Btn, {
+    onClick: saveIntake,
+    disabled: !hasContent
+  }, editingId ? "Wijzigingen opslaan" : "Intake opslaan"))), /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "flex",
+      flexDirection: "column",
+      gap: 8
+    }
+  }, sorted.length === 0 && !showForm && /*#__PURE__*/React.createElement("div", {
+    style: {
+      color: COLORS.textFaint,
+      fontSize: 13
+    }
+  }, "Nog geen intakegesprekken. Klik op \"+ Nieuwe intake\" om het eerste gesprek vast te leggen."), sorted.map(i => {
+    const open = expandedId === i.id;
+    const filled = INTAKE_FIELDS.filter(f => (i[f.key] || "").trim());
+    const preview = (i.goal || i.motivation || i.notes || "").slice(0, 90);
+    return /*#__PURE__*/React.createElement("div", {
+      key: i.id,
+      style: {
+        border: `1px solid ${COLORS.borderSoft}`,
+        borderRadius: 8,
+        overflow: "hidden"
+      }
+    }, /*#__PURE__*/React.createElement("div", {
+      onClick: () => setExpandedId(open ? null : i.id),
+      style: {
+        display: "flex",
+        justifyContent: "space-between",
+        alignItems: "center",
+        padding: "12px 14px",
+        cursor: "pointer",
+        background: COLORS.surface,
+        gap: 12
+      }
+    }, /*#__PURE__*/React.createElement("div", {
+      style: {
+        display: "flex",
+        gap: 14,
+        alignItems: "baseline",
+        minWidth: 0
+      }
+    }, /*#__PURE__*/React.createElement("span", {
+      style: {
+        fontFamily: monoFont,
+        fontSize: 13,
+        color: COLORS.text,
+        fontWeight: 700,
+        flexShrink: 0
+      }
+    }, fmtDate(i.date)), /*#__PURE__*/React.createElement("span", {
+      style: {
+        fontSize: 12,
+        color: COLORS.textMuted,
+        overflow: "hidden",
+        textOverflow: "ellipsis",
+        whiteSpace: "nowrap"
+      }
+    }, preview, preview.length >= 90 ? "…" : "")), /*#__PURE__*/React.createElement("span", {
+      style: {
+        fontSize: 11,
+        color: COLORS.textFaint
+      }
+    }, open ? "▲" : "▼")), open && /*#__PURE__*/React.createElement("div", {
+      style: {
+        padding: "12px 14px 16px",
+        background: COLORS.bg
+      }
+    }, filled.map(f => /*#__PURE__*/React.createElement("div", {
+      key: f.key,
+      style: {
+        marginBottom: 12
+      }
+    }, /*#__PURE__*/React.createElement("div", {
+      style: {
+        fontSize: 10.5,
+        fontWeight: 700,
+        letterSpacing: "0.05em",
+        textTransform: "uppercase",
+        color: COLORS.accent,
+        marginBottom: 3
+      }
+    }, f.label), /*#__PURE__*/React.createElement("div", {
+      style: {
+        fontSize: 13,
+        color: COLORS.text,
+        whiteSpace: "pre-wrap",
+        lineHeight: 1.5
+      }
+    }, i[f.key]))), /*#__PURE__*/React.createElement("div", {
+      style: {
+        display: "flex",
+        gap: 14,
+        marginTop: 8,
+        alignItems: "center"
+      }
+    }, /*#__PURE__*/React.createElement("span", {
+      onClick: () => startEdit(i),
+      style: {
+        color: COLORS.accent,
+        fontSize: 12,
+        cursor: "pointer",
+        fontWeight: 600
+      }
+    }, "Bewerken"), confirmDeleteId === i.id ? /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement("span", {
+      onClick: () => deleteIntake(i.id),
+      style: {
+        color: COLORS.accent,
+        fontSize: 12,
+        cursor: "pointer",
+        fontWeight: 700
+      }
+    }, "Ja, verwijderen"), /*#__PURE__*/React.createElement("span", {
+      onClick: () => setConfirmDeleteId(null),
+      style: {
+        color: COLORS.textFaint,
+        fontSize: 12,
+        cursor: "pointer"
+      }
+    }, "annuleer")) : /*#__PURE__*/React.createElement("span", {
+      onClick: () => setConfirmDeleteId(i.id),
+      style: {
+        color: COLORS.textFaint,
+        fontSize: 12,
+        cursor: "pointer"
+      }
+    }, "verwijderen"))));
   })));
 }
 

@@ -1,4 +1,4 @@
-const CACHE_NAME = "aot-trainer-v6";
+const CACHE_NAME = "aot-trainer-v7";
 
 const LOCAL_ASSETS = [
   "./",
